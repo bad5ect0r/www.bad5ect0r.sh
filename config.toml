@@ -1,0 +1,31 @@
+baseURL = "http://example.org/"
+languageCode = "en-us"
+title = "bad5ect0r | Security Researcher"
+theme = "terminal"
+owner = "bad5ect0r"
+keywords = ["security", "hacking", "bug bounty", "vulnerability disclosure"]
+missingContentMessage = "Where'd you go? There's nothing here!"
+missingBackButtonLabel = "Go back"
+
+[params]
+    fullWidthTheme = false
+    centerTheme = false
+    themeColor = "red"
+    showMenuItems = 5
+    favicon = "/favicon.ico"
+
+[params.logo]
+    logoText = "root@yourbox:~#"
+    logoHomeLink = "/"
+
+[menu]
+    [[menu.main]]
+        identifier = "home"
+        name = "Home"
+        url = "/"
+    
+    [[menu.main]]
+        identifier = "posts"
+        name = "Posts"
+        url = "/posts"
+    
