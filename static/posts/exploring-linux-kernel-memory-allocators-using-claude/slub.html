@@ -1,0 +1,2081 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>The SLUB Allocator — An Animated Field Guide</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght,SOFT@9..144,300..900,0..100&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+<style>
+:root {
+  --paper: #F2EBDD;
+  --paper-dim: #EAE0CB;
+  --paper-deep: #DFD3B8;
+  --ink: #1B1A17;
+  --ink-2: #3A3631;
+  --ink-3: #6E6860;
+  --ink-4: #9A938A;
+  --rule: rgba(27, 26, 23, 0.14);
+  --rule-strong: rgba(27, 26, 23, 0.32);
+  --accent: #C8442A;
+  --accent-deep: #9C2E18;
+  --accent-soft: #E8B4A6;
+  --accent-bg: rgba(200, 68, 42, 0.10);
+  --blue: #2A4858;
+  --blue-soft: #B8C8D0;
+  --green: #4A6B3F;
+  --gold: #B7873B;
+  --shadow-sm: 0 1px 2px rgba(27, 26, 23, 0.08);
+  --shadow-md: 0 4px 14px rgba(27, 26, 23, 0.10);
+  --shadow-lg: 0 12px 36px rgba(27, 26, 23, 0.14);
+  --serif: 'Fraunces', Georgia, serif;
+  --sans: 'IBM Plex Sans', system-ui, sans-serif;
+  --mono: 'IBM Plex Mono', ui-monospace, monospace;
+}
+
+* { box-sizing: border-box; }
+*::selection { background: var(--accent); color: var(--paper); }
+
+html { scroll-behavior: smooth; }
+
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 16px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background-image:
+    radial-gradient(ellipse at 18% 8%, rgba(200, 68, 42, 0.06), transparent 45%),
+    radial-gradient(ellipse at 88% 92%, rgba(42, 72, 88, 0.05), transparent 50%);
+  overflow-x: hidden;
+}
+
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.07 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  opacity: 0.55;
+  z-index: 1;
+  mix-blend-mode: multiply;
+}
+
+main { position: relative; z-index: 2; }
+
+/* ─────────────────────────────────────────────── Layout ── */
+.container {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 0 36px;
+}
+
+section {
+  padding: 80px 0;
+  position: relative;
+}
+
+section + section { border-top: 1px solid var(--rule); }
+
+/* ─────────────────────────────────────────────── Top bar ── */
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 50;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 14px 36px;
+  background: rgba(242, 235, 221, 0.86);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--rule);
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.topbar .mark { font-weight: 600; color: var(--ink); }
+.topbar .meta { color: var(--ink-3); display: flex; gap: 18px; }
+.topbar .meta a { color: var(--ink-3); text-decoration: none; transition: color .2s; }
+.topbar .meta a:hover { color: var(--accent); }
+
+/* ─────────────────────────────────────────────── Hero ── */
+.hero {
+  padding: 80px 0 60px;
+  position: relative;
+  min-height: 88vh;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+.hero .eyebrow {
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin-bottom: 28px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.hero .eyebrow::before {
+  content: '';
+  width: 36px;
+  height: 1px;
+  background: var(--accent);
+}
+.hero h1 {
+  font-family: var(--serif);
+  font-variation-settings: "opsz" 144, "wght" 380, "SOFT" 30;
+  font-size: clamp(60px, 12vw, 168px);
+  line-height: 0.92;
+  letter-spacing: -0.035em;
+  margin: 0 0 28px;
+  font-weight: 380;
+}
+.hero h1 em {
+  font-variation-settings: "opsz" 144, "wght" 380, "SOFT" 30;
+  font-style: italic;
+  color: var(--accent);
+}
+.hero .subtitle {
+  font-family: var(--serif);
+  font-variation-settings: "opsz" 24, "wght" 360;
+  font-size: clamp(18px, 2.4vw, 28px);
+  line-height: 1.4;
+  max-width: 640px;
+  color: var(--ink-2);
+  margin: 0 0 56px;
+  font-weight: 360;
+}
+.hero-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 48px;
+  align-items: end;
+  margin-top: auto;
+}
+.hero-stats {
+  display: flex;
+  gap: 48px;
+  flex-wrap: wrap;
+}
+.stat {
+  border-top: 1px solid var(--rule-strong);
+  padding-top: 14px;
+  min-width: 130px;
+}
+.stat .num {
+  font-family: var(--serif);
+  font-variation-settings: "opsz" 60, "wght" 500;
+  font-size: 38px;
+  line-height: 1;
+  color: var(--ink);
+}
+.stat .lbl {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  margin-top: 8px;
+}
+.hero-illustration {
+  position: relative;
+  height: 220px;
+  display: flex;
+  align-items: flex-end;
+  justify-content: flex-end;
+}
+.hero-illustration .mini-slab {
+  --t: 0;
+}
+
+/* ─────────────────────────────────────────────── Typography ── */
+.section-num {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin-bottom: 24px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.section-num::before {
+  content: '';
+  width: 28px;
+  height: 1px;
+  background: var(--accent);
+}
+h2 {
+  font-family: var(--serif);
+  font-variation-settings: "opsz" 96, "wght" 400, "SOFT" 30;
+  font-size: clamp(36px, 5.2vw, 68px);
+  line-height: 1.02;
+  letter-spacing: -0.025em;
+  margin: 0 0 28px;
+  font-weight: 400;
+  max-width: 920px;
+}
+h2 em {
+  font-style: italic;
+  color: var(--accent);
+}
+h3 {
+  font-family: var(--serif);
+  font-variation-settings: "opsz" 36, "wght" 500;
+  font-size: 24px;
+  line-height: 1.2;
+  margin: 0 0 14px;
+  font-weight: 500;
+}
+.lede {
+  font-family: var(--serif);
+  font-variation-settings: "opsz" 18, "wght" 380;
+  font-size: 21px;
+  line-height: 1.55;
+  color: var(--ink-2);
+  max-width: 680px;
+  margin: 0 0 36px;
+}
+.body p { max-width: 640px; margin: 0 0 18px; color: var(--ink-2); }
+.body code, code.inline {
+  font-family: var(--mono);
+  font-size: 0.92em;
+  background: var(--paper-dim);
+  padding: 1px 6px;
+  border-radius: 3px;
+  color: var(--ink);
+  border: 1px solid var(--rule);
+}
+
+/* Two-column section layout */
+.split {
+  display: grid;
+  grid-template-columns: 1fr 1.15fr;
+  gap: 64px;
+  align-items: start;
+}
+.split.reverse { grid-template-columns: 1.15fr 1fr; }
+.split.reverse .col-text { order: 2; }
+.split.reverse .col-figure { order: 1; }
+.col-text { max-width: 460px; }
+.col-figure { position: relative; min-height: 320px; }
+
+@media (max-width: 880px) {
+  .split, .split.reverse { grid-template-columns: 1fr; gap: 40px; }
+  .split.reverse .col-text { order: 1; }
+  .split.reverse .col-figure { order: 2; }
+  .container { padding: 0 22px; }
+  .hero-grid { grid-template-columns: 1fr; }
+  section { padding: 56px 0; }
+}
+
+/* ─────────────────────────────────────────────── Slab widget ── */
+.slab {
+  position: relative;
+  background: var(--paper-dim);
+  border: 1px solid var(--rule-strong);
+  border-radius: 4px;
+  padding: 18px 22px 28px;
+  font-family: var(--mono);
+  box-shadow: var(--shadow-sm);
+  transition: background .35s, border-color .35s, box-shadow .35s;
+}
+.slab.is-active {
+  background: var(--paper);
+  border-color: var(--accent);
+  box-shadow: var(--shadow-md), 0 0 0 3px var(--accent-bg);
+}
+.slab.is-empty { opacity: 0.55; }
+.slab.is-full { background: var(--paper-deep); }
+
+.slab-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 14px;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.slab-label { color: var(--ink-2); font-weight: 600; }
+.slab-state {
+  padding: 2px 8px;
+  border: 1px solid var(--rule-strong);
+  border-radius: 999px;
+  font-size: 10px;
+  color: var(--ink-3);
+  background: var(--paper);
+  transition: all .3s;
+}
+.slab.is-active .slab-state {
+  background: var(--accent);
+  color: var(--paper);
+  border-color: var(--accent);
+}
+.slab.is-full .slab-state {
+  background: var(--ink);
+  color: var(--paper);
+  border-color: var(--ink);
+}
+
+.slab-cells {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  gap: 8px;
+  padding-top: 28px;
+}
+.slab.cells-6 .slab-cells { grid-template-columns: repeat(6, 1fr); }
+.slab.cells-4 .slab-cells { grid-template-columns: repeat(4, 1fr); }
+
+.cell {
+  position: relative;
+  aspect-ratio: 1 / 1.05;
+  border-radius: 3px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.03em;
+  cursor: default;
+  transition: all .35s cubic-bezier(.2,.7,.2,1);
+  user-select: none;
+  overflow: hidden;
+}
+.cell.free {
+  background: transparent;
+  border: 1px dashed var(--rule-strong);
+  color: var(--ink-4);
+}
+.cell.allocated {
+  background: var(--ink);
+  border: 1px solid var(--ink);
+  color: var(--paper);
+  cursor: pointer;
+}
+.cell.allocated:hover {
+  background: var(--accent);
+  border-color: var(--accent);
+  transform: translateY(-2px);
+}
+.cell.head-target {
+  border-color: var(--accent);
+  background: var(--accent-bg);
+  color: var(--accent);
+  animation: cellPulse 1.6s ease-in-out infinite;
+}
+.cell.flash-alloc {
+  animation: flashAlloc .6s ease;
+}
+.cell.flash-free {
+  animation: flashFree .6s ease;
+}
+.cell .cell-content {
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+}
+.cell .cell-idx {
+  position: absolute;
+  top: 3px;
+  left: 4px;
+  font-family: var(--mono);
+  font-size: 8px;
+  color: var(--ink-4);
+  letter-spacing: 0;
+}
+.cell.allocated .cell-idx { color: var(--ink-4); }
+
+@keyframes cellPulse {
+  0%, 100% { box-shadow: 0 0 0 0 var(--accent-bg); }
+  50%      { box-shadow: 0 0 0 6px transparent; }
+}
+@keyframes flashAlloc {
+  0%   { background: var(--accent); transform: scale(1.08); }
+  100% { background: var(--ink); transform: scale(1); }
+}
+@keyframes flashFree {
+  0%   { background: var(--accent-soft); transform: scale(1.06); }
+  100% { background: transparent; transform: scale(1); }
+}
+
+/* head pointer indicator */
+.head-pointer {
+  position: absolute;
+  top: 0;
+  height: 26px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  pointer-events: none;
+  transition: left .55s cubic-bezier(.5,0,.2,1), opacity .3s;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--accent);
+  font-weight: 600;
+  z-index: 3;
+}
+.head-pointer .label { margin-bottom: 2px; letter-spacing: 0.04em; }
+.head-pointer .arrow {
+  width: 0; height: 0;
+  border-left: 5px solid transparent;
+  border-right: 5px solid transparent;
+  border-top: 7px solid var(--accent);
+}
+.head-pointer.hidden { opacity: 0; }
+.head-pointer.null-head .label::after {
+  content: ' = NULL';
+  color: var(--ink-3);
+  font-weight: 400;
+}
+
+/* freelist arrows (svg overlay) */
+.freelist-svg {
+  position: absolute;
+  pointer-events: none;
+  overflow: visible;
+  inset: 0;
+  z-index: 2;
+}
+.freelist-svg path {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 1.5;
+  stroke-dasharray: 3 3;
+  opacity: 0.85;
+  transition: stroke-dashoffset .6s ease;
+}
+.freelist-svg .arrowhead { fill: var(--accent); stroke: none; }
+.freelist-svg .null-marker {
+  fill: var(--ink-3);
+  font-family: var(--mono);
+  font-size: 10px;
+}
+
+.slab-foot {
+  margin-top: 14px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 10px;
+  color: var(--ink-3);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+.slab-foot .bytes { font-family: var(--mono); }
+
+/* ─────────────────────────────────────────────── Buttons ── */
+.controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 22px;
+}
+.btn {
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: 0.05em;
+  padding: 9px 16px;
+  background: var(--ink);
+  color: var(--paper);
+  border: 1px solid var(--ink);
+  border-radius: 999px;
+  cursor: pointer;
+  transition: all .2s;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+.btn:hover { background: var(--accent); border-color: var(--accent); transform: translateY(-1px); }
+.btn:active { transform: translateY(0); }
+.btn.ghost { background: transparent; color: var(--ink); }
+.btn.ghost:hover { background: var(--ink); color: var(--paper); }
+.btn.accent { background: var(--accent); border-color: var(--accent); }
+.btn.accent:hover { background: var(--accent-deep); border-color: var(--accent-deep); }
+.btn[disabled] { opacity: 0.4; cursor: not-allowed; transform: none; }
+.btn .glyph { font-family: var(--serif); font-size: 14px; line-height: 1; }
+
+/* status line */
+.status-line {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--ink-3);
+  margin-top: 18px;
+  padding: 12px 16px;
+  border-left: 2px solid var(--accent);
+  background: var(--accent-bg);
+  min-height: 44px;
+  line-height: 1.5;
+  transition: background .2s;
+}
+.status-line .timestamp { color: var(--accent); margin-right: 8px; }
+.status-line strong { color: var(--ink); font-weight: 600; }
+
+/* ─────────────────────────────────────────────── Anatomy diagram ── */
+.anatomy-diagram {
+  position: relative;
+  padding: 24px;
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  font-family: var(--mono);
+  font-size: 11px;
+  box-shadow: var(--shadow-sm);
+}
+.anatomy-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 14px 0;
+  border-bottom: 1px dashed var(--rule);
+}
+.anatomy-row:last-child { border-bottom: 0; }
+.anatomy-tag {
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  width: 140px;
+  flex-shrink: 0;
+}
+.anatomy-card {
+  flex: 1;
+  background: var(--paper-dim);
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  padding: 10px 14px;
+  font-size: 11px;
+  line-height: 1.5;
+  position: relative;
+  transition: all .3s;
+}
+.anatomy-card.glow {
+  border-color: var(--accent);
+  background: var(--accent-bg);
+  box-shadow: 0 0 0 4px rgba(200, 68, 42, 0.05);
+}
+.anatomy-card .name { color: var(--accent); font-weight: 600; }
+.anatomy-card .field { color: var(--ink-3); }
+.anatomy-arrow {
+  width: 28px; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--ink-3);
+}
+
+/* small inline slab for anatomy */
+.mini-cells {
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  gap: 3px;
+  margin-top: 6px;
+}
+.mini-cells .mc {
+  aspect-ratio: 1;
+  border-radius: 2px;
+  background: var(--ink);
+  opacity: 0.85;
+}
+.mini-cells .mc.free {
+  background: transparent;
+  border: 1px dashed var(--rule-strong);
+  opacity: 1;
+}
+
+/* ─────────────────────────────────────────────── Why grid ── */
+.why-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 22px;
+}
+.why-card {
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  padding: 22px 24px;
+  position: relative;
+  overflow: hidden;
+}
+.why-card .obj-name {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--accent);
+  margin-bottom: 4px;
+  letter-spacing: 0.02em;
+}
+.why-card .obj-size {
+  font-family: var(--serif);
+  font-variation-settings: "opsz" 36, "wght" 460;
+  font-size: 26px;
+  line-height: 1;
+  margin-bottom: 4px;
+}
+.why-card .obj-desc {
+  font-size: 12px;
+  color: var(--ink-3);
+  line-height: 1.5;
+}
+.why-card .rate {
+  position: absolute;
+  top: 18px;
+  right: 18px;
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  color: var(--ink-4);
+  text-transform: uppercase;
+}
+
+/* ─────────────────────────────────────────────── Step list ── */
+.steps {
+  list-style: none;
+  padding: 0;
+  margin: 22px 0 0;
+  counter-reset: step;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+.steps li {
+  display: flex;
+  gap: 16px;
+  padding: 12px 0;
+  border-top: 1px solid var(--rule);
+  color: var(--ink-3);
+  transition: color .25s;
+  counter-increment: step;
+}
+.steps li::before {
+  content: counter(step, decimal-leading-zero);
+  font-size: 10px;
+  color: var(--ink-4);
+  flex-shrink: 0;
+  font-weight: 500;
+}
+.steps li.active { color: var(--ink); }
+.steps li.active::before { color: var(--accent); }
+.steps li.done { color: var(--ink-3); }
+.steps li.done::before { color: var(--ink-3); text-decoration: line-through; }
+
+/* ─────────────────────────────────────────────── Code block ── */
+.codeblock {
+  background: var(--ink);
+  color: var(--paper);
+  border-radius: 4px;
+  padding: 22px 24px;
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 1.7;
+  overflow-x: auto;
+  position: relative;
+}
+.codeblock .kw { color: #E8B4A6; }
+.codeblock .fn { color: #B7C8D4; }
+.codeblock .num { color: #D4B36A; }
+.codeblock .com { color: #6E6860; font-style: italic; }
+.codeblock .str { color: #B7C8D4; }
+.codeblock .head {
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  color: var(--ink-4);
+  text-transform: uppercase;
+  margin-bottom: 12px;
+}
+
+/* ─────────────────────────────────────────────── Page allocator viz ── */
+.page-source {
+  border: 1px solid var(--rule-strong);
+  border-radius: 4px;
+  padding: 12px 16px;
+  background: var(--paper-deep);
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+  margin-bottom: 22px;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  transition: all .35s;
+}
+.page-source.firing {
+  background: var(--accent-bg);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.page-source .icon {
+  display: inline-flex;
+  width: 18px; height: 18px;
+  border: 1px solid currentColor;
+  border-radius: 2px;
+  margin-right: 10px;
+  position: relative;
+}
+.page-source .icon::before, .page-source .icon::after {
+  content: '';
+  position: absolute;
+  background: currentColor;
+  inset: 0 30%;
+  height: 1px;
+  top: 50%;
+}
+.page-source .icon::after { inset: 30% 0; width: 1px; height: auto; }
+
+.partial-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.partial-list .slab-mini {
+  background: var(--paper-dim);
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  padding: 10px 14px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  color: var(--ink-3);
+  text-transform: uppercase;
+  transition: all .35s;
+}
+.partial-list .slab-mini.promoting {
+  background: var(--accent-bg);
+  border-color: var(--accent);
+  color: var(--accent);
+  transform: translateX(8px);
+}
+.partial-list .slab-mini .mini-cells { flex: 1; margin-top: 0; }
+.partial-list .slab-mini .name { width: 80px; flex-shrink: 0; }
+
+/* ─────────────────────────────────────────────── Playground ── */
+.playground {
+  background: var(--paper);
+  border: 1px solid var(--rule-strong);
+  border-radius: 6px;
+  padding: 32px;
+  box-shadow: var(--shadow-md);
+}
+.playground-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 28px;
+  border-bottom: 1px solid var(--rule);
+  padding-bottom: 18px;
+}
+.playground-header .pg-title {
+  font-family: var(--serif);
+  font-variation-settings: "opsz" 36, "wght" 460;
+  font-size: 22px;
+}
+.playground-header .pg-meta {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-3);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.pg-stats {
+  display: flex;
+  gap: 28px;
+  margin-bottom: 24px;
+  flex-wrap: wrap;
+  font-family: var(--mono);
+  font-size: 11px;
+}
+.pg-stat .v {
+  font-family: var(--serif);
+  font-variation-settings: "opsz" 36, "wght" 500;
+  font-size: 28px;
+  color: var(--ink);
+  display: block;
+  line-height: 1;
+}
+.pg-stat .l {
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  margin-top: 4px;
+  display: block;
+}
+.pg-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 22px;
+}
+
+/* ─────────────────────────────────────────────── Footer ── */
+.footnote-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 32px;
+  margin-top: 40px;
+}
+.footnote-grid h4 {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin: 0 0 12px;
+}
+.footnote-grid p {
+  font-size: 13px;
+  color: var(--ink-2);
+  line-height: 1.55;
+  margin: 0;
+}
+.footnote-grid code {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--ink);
+}
+
+footer {
+  padding: 60px 0 80px;
+  border-top: 1px solid var(--rule);
+  text-align: center;
+}
+footer .colophon {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+footer .mark {
+  font-family: var(--serif);
+  font-variation-settings: "opsz" 144, "wght" 380;
+  font-style: italic;
+  font-size: 32px;
+  color: var(--accent);
+  margin-bottom: 14px;
+}
+
+/* ─────────────────────────────────────────────── Reveal animations ── */
+.reveal {
+  opacity: 0;
+  transform: translateY(28px);
+  transition: opacity .9s cubic-bezier(.2,.7,.2,1), transform .9s cubic-bezier(.2,.7,.2,1);
+}
+.reveal.in { opacity: 1; transform: translateY(0); }
+.reveal.delay-1 { transition-delay: .12s; }
+.reveal.delay-2 { transition-delay: .24s; }
+.reveal.delay-3 { transition-delay: .36s; }
+
+/* ─────────────────────────────────────────────── Footnote / pullquote ── */
+.callout {
+  margin: 28px 0;
+  padding: 18px 22px;
+  border-left: 2px solid var(--accent);
+  background: var(--accent-bg);
+  font-family: var(--serif);
+  font-variation-settings: "opsz" 18, "wght" 380;
+  font-style: italic;
+  font-size: 17px;
+  color: var(--ink-2);
+  line-height: 1.5;
+}
+
+@media (max-width: 720px) {
+  .why-grid { grid-template-columns: 1fr; }
+  .footnote-grid { grid-template-columns: 1fr; gap: 22px; }
+  .hero-stats { gap: 24px; }
+  .stat { min-width: 100px; }
+}
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="mark">SLUB / mm/slub.c</div>
+  <div class="meta">
+    <span>An animated field guide</span>
+    <a href="#playground">↓ Playground</a>
+  </div>
+</div>
+
+<main>
+
+<!-- ═══════════════════════════════════════════════════════════════ HERO ═══ -->
+<section class="hero">
+  <div class="container">
+    <div class="eyebrow reveal">Linux memory management · A primer in motion</div>
+    <h1 class="reveal delay-1">The <em>SLUB</em><br>Allocator</h1>
+    <p class="subtitle reveal delay-2">An animated field guide to how the Linux kernel parcels out small objects — without thrashing, without locking, and without claiming more memory than it needs.</p>
+
+    <div class="hero-grid reveal delay-3">
+      <div class="hero-stats">
+        <div class="stat"><div class="num">2007</div><div class="lbl">Default since</div></div>
+        <div class="stat"><div class="num">~10⁶/s</div><div class="lbl">Allocs per CPU</div></div>
+        <div class="stat"><div class="num">4 ld/st</div><div class="lbl">Fast path cost</div></div>
+        <div class="stat"><div class="num">0</div><div class="lbl">Locks (happy path)</div></div>
+      </div>
+      <div class="hero-illustration">
+        <div class="slab" id="hero-slab" style="width: 100%; max-width: 380px;">
+          <div class="slab-header">
+            <span class="slab-label">task_struct_cachep · CPU 0</span>
+            <span class="slab-state">ACTIVE</span>
+          </div>
+          <div class="slab-cells" data-cells></div>
+          <svg class="freelist-svg" data-svg></svg>
+          <div class="head-pointer" data-head><span class="label">freelist</span><span class="arrow"></span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════ WHY ═══ -->
+<section id="why">
+  <div class="container">
+    <div class="section-num reveal">§ I — The problem</div>
+    <h2 class="reveal delay-1">A million tiny <em>objects</em>, every second.</h2>
+    <p class="lede reveal delay-2">A running kernel is a blizzard of small allocations — file descriptors, network buffers, dentries, task structures. Asking the page allocator (which deals in 4 KB units) for each one would shred memory, cache lines, and CPU cycles. The slab allocator's job is to make those allocations cheap and dense.</p>
+
+    <div class="why-grid reveal delay-3">
+      <div class="why-card">
+        <div class="rate">~thousands / s</div>
+        <div class="obj-name">task_struct</div>
+        <div class="obj-size">~9.5 KB</div>
+        <div class="obj-desc">One per process and thread. Created at fork, destroyed at exit. Asks the slab allocator constantly.</div>
+      </div>
+      <div class="why-card">
+        <div class="rate">~10⁵ / s</div>
+        <div class="obj-name">struct dentry</div>
+        <div class="obj-size">192 B</div>
+        <div class="obj-desc">Cached path component. The VFS chews through these on every <code class="inline">open()</code>.</div>
+      </div>
+      <div class="why-card">
+        <div class="rate">~10⁶ / s</div>
+        <div class="obj-name">struct sk_buff</div>
+        <div class="obj-size">232 B</div>
+        <div class="obj-desc">Network packet header. One per packet in flight on a busy NIC.</div>
+      </div>
+      <div class="why-card">
+        <div class="rate">~10⁵ / s</div>
+        <div class="obj-name">struct inode</div>
+        <div class="obj-size">~600 B</div>
+        <div class="obj-desc">Filesystem object metadata. Allocated on every cold-cache stat.</div>
+      </div>
+    </div>
+
+    <div class="callout reveal" style="margin-top: 36px;">SLUB has been the kernel's default slab allocator since 2.6.23 (October 2007). It replaced the older SLAB allocator with less metadata, simpler code, and per-CPU lockless fast paths.</div>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════ ANATOMY ═══ -->
+<section id="anatomy">
+  <div class="container">
+    <div class="split">
+      <div class="col-text">
+        <div class="section-num reveal">§ II — Anatomy</div>
+        <h2 class="reveal delay-1">A cache, per CPU, per <em>node</em>.</h2>
+        <div class="body reveal delay-2">
+          <p>Each kind of object lives in its own <code class="inline">kmem_cache</code>. Inside the cache, every CPU gets its own private <code class="inline">kmem_cache_cpu</code> with an active slab and a small partial-slab cache that no other CPU may touch.</p>
+          <p>One step out, every NUMA node gets a <code class="inline">kmem_cache_node</code> that holds a longer list of partial slabs — shared, but rarely contended.</p>
+          <p>A <strong>slab</strong> itself is one or more contiguous pages, sliced into N equally-sized objects.</p>
+        </div>
+      </div>
+      <div class="col-figure">
+        <div class="anatomy-diagram reveal delay-2" id="anatomy-diagram">
+          <div class="anatomy-row">
+            <div class="anatomy-tag">Cache</div>
+            <div class="anatomy-card" data-step="0">
+              <div class="name">kmem_cache</div>
+              <div class="field">name = "task_struct"</div>
+              <div class="field">size = 9472, align = 64</div>
+            </div>
+          </div>
+          <div class="anatomy-row">
+            <div class="anatomy-tag">Per-CPU</div>
+            <div class="anatomy-card" data-step="1">
+              <div class="name">kmem_cache_cpu (CPU 0)</div>
+              <div class="field">freelist → 0xff80…</div>
+              <div class="field">slab → active</div>
+              <div class="field">partial → [3 slabs]</div>
+            </div>
+            <div class="anatomy-arrow">→</div>
+            <div class="anatomy-card" data-step="2">
+              <div class="name">active slab</div>
+              <div class="mini-cells">
+                <div class="mc"></div><div class="mc"></div><div class="mc free"></div><div class="mc"></div>
+                <div class="mc free"></div><div class="mc"></div><div class="mc free"></div><div class="mc"></div>
+              </div>
+            </div>
+          </div>
+          <div class="anatomy-row">
+            <div class="anatomy-tag">Per-Node</div>
+            <div class="anatomy-card" data-step="3">
+              <div class="name">kmem_cache_node (node 0)</div>
+              <div class="field">partial = list[7]</div>
+              <div class="field">nr_partial = 7</div>
+            </div>
+            <div class="anatomy-arrow">→</div>
+            <div class="anatomy-card" data-step="4">
+              <div class="name">partial slabs</div>
+              <div class="mini-cells">
+                <div class="mc"></div><div class="mc free"></div><div class="mc"></div><div class="mc free"></div>
+                <div class="mc free"></div><div class="mc"></div><div class="mc"></div><div class="mc free"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════ FREELIST ═══ -->
+<section id="freelist">
+  <div class="container">
+    <div class="split reverse">
+      <div class="col-text">
+        <div class="section-num reveal">§ III — The freelist trick</div>
+        <h2 class="reveal delay-1">Free objects <em>are</em> the metadata.</h2>
+        <div class="body reveal delay-2">
+          <p>The first machine word of every <em>free</em> object holds a pointer to the next free object in the same slab. The chain ends in <code class="inline">NULL</code>. The cache stores only the <em>head</em>.</p>
+          <p>Allocate? Pop the head. Free? Push the head. No bitmaps. No external bookkeeping. The freelist threads through memory the CPU was about to touch anyway, so the next-pointer is hot in cache by the time we need it.</p>
+          <p style="color: var(--ink-3); font-size: 14px;">(Modern kernels XOR-hash the pointer with a per-cache cookie — <code class="inline">CONFIG_SLAB_FREELIST_HARDENED</code> — to break heap-overflow exploits. Same data structure, defanged.)</p>
+        </div>
+      </div>
+      <div class="col-figure">
+        <div class="slab reveal delay-2" id="freelist-slab">
+          <div class="slab-header">
+            <span class="slab-label">A slab in the wild</span>
+            <span class="slab-state">PARTIAL</span>
+          </div>
+          <div class="slab-cells" data-cells></div>
+          <svg class="freelist-svg" data-svg></svg>
+          <div class="head-pointer" data-head><span class="label">freelist</span><span class="arrow"></span></div>
+          <div class="slab-foot">
+            <span>8 × 256 B objects</span>
+            <span class="bytes">page @ 0xff8000…</span>
+          </div>
+        </div>
+        <div class="controls reveal delay-3">
+          <button class="btn ghost" id="freelist-replay"><span class="glyph">↻</span> Replay chain</button>
+          <button class="btn ghost" id="freelist-shuffle"><span class="glyph">⤨</span> Shuffle</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════ FAST PATH ═══ -->
+<section id="fastpath">
+  <div class="container">
+    <div class="split">
+      <div class="col-text">
+        <div class="section-num reveal">§ IV — The fast path</div>
+        <h2 class="reveal delay-1"><em>kmalloc()</em> in four loads.</h2>
+        <div class="body reveal delay-2">
+          <p>The overwhelming majority of allocations resolve here. There is no spinlock, no atomic — just a CPU-local pointer dance protected by <code class="inline">this_cpu_cmpxchg_double</code>.</p>
+        </div>
+        <div class="codeblock reveal delay-3" style="margin-top: 18px;">
+          <div class="head">slab_alloc — fast path (paraphrased)</div>
+          <span class="com">// Per-CPU. No locks. No retries (mostly).</span><br>
+          <span class="kw">void *</span><span class="fn">slab_alloc</span>(<span class="kw">kmem_cache *</span>s) {<br>
+          &nbsp;&nbsp;<span class="kw">void *</span>obj = c-&gt;freelist;<br>
+          &nbsp;&nbsp;<span class="kw">if</span> (<span class="fn">likely</span>(obj)) {<br>
+          &nbsp;&nbsp;&nbsp;&nbsp;c-&gt;freelist = <span class="fn">get_freepointer</span>(s, obj);<br>
+          &nbsp;&nbsp;&nbsp;&nbsp;<span class="kw">return</span> obj;          <span class="com">// done.</span><br>
+          &nbsp;&nbsp;}<br>
+          &nbsp;&nbsp;<span class="kw">return</span> <span class="fn">__slab_alloc</span>(s);  <span class="com">// slow path</span><br>
+          }
+        </div>
+      </div>
+      <div class="col-figure">
+        <div class="slab reveal delay-2" id="fast-slab">
+          <div class="slab-header">
+            <span class="slab-label">CPU 0 · active slab</span>
+            <span class="slab-state">ACTIVE</span>
+          </div>
+          <div class="slab-cells" data-cells></div>
+          <svg class="freelist-svg" data-svg></svg>
+          <div class="head-pointer" data-head><span class="label">freelist</span><span class="arrow"></span></div>
+          <div class="slab-foot">
+            <span id="fast-bytes">3 alloc · 5 free</span>
+            <span class="bytes" id="fast-rate">0 alloc/s</span>
+          </div>
+        </div>
+        <div class="controls reveal delay-3">
+          <button class="btn accent" id="fast-alloc"><span class="glyph">+</span> kmalloc()</button>
+          <button class="btn ghost" id="fast-burst"><span class="glyph">⚡</span> Burst × 5</button>
+          <button class="btn ghost" id="fast-reset"><span class="glyph">↻</span> Reset</button>
+        </div>
+        <div class="status-line" id="fast-status">
+          <span class="timestamp">[ready]</span>Press <strong>kmalloc()</strong> to pop the freelist head.
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════ SLOW PATH ═══ -->
+<section id="slowpath">
+  <div class="container">
+    <div class="split reverse">
+      <div class="col-text">
+        <div class="section-num reveal">§ V — When the freelist runs dry</div>
+        <h2 class="reveal delay-1">Demote, promote, <em>repeat</em>.</h2>
+        <div class="body reveal delay-2">
+          <p>If the active slab's freelist is <code class="inline">NULL</code>, the slow path takes over. The active slab is simply <em>dropped</em> — SLUB doesn't track full slabs, which is half the reason it's leaner than SLAB.</p>
+          <p>A slab is then promoted from the per-CPU partial list. Promotion is still lockless: a <code class="inline">cmpxchg</code> pulls the head off the partial chain.</p>
+          <p>If the per-CPU partial list is empty, we drop into the per-node partial list (with one spinlock — but contention here is rare). Only if every list is empty do we ask the page allocator for fresh memory.</p>
+        </div>
+      </div>
+      <div class="col-figure">
+        <ol class="steps reveal delay-2" id="slow-steps">
+          <li>Active slab's freelist hits <code class="inline">NULL</code></li>
+          <li>Active slab is detached (no longer tracked)</li>
+          <li>Head of CPU partial list is promoted to active</li>
+          <li>Allocation proceeds against the new active slab</li>
+        </ol>
+        <div class="slab reveal delay-3" id="slow-slab" style="margin-top: 22px;">
+          <div class="slab-header">
+            <span class="slab-label">CPU 0 · active slab</span>
+            <span class="slab-state">ACTIVE</span>
+          </div>
+          <div class="slab-cells" data-cells></div>
+          <svg class="freelist-svg" data-svg></svg>
+          <div class="head-pointer" data-head><span class="label">freelist</span><span class="arrow"></span></div>
+        </div>
+        <div style="font-family: var(--mono); font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-3); margin: 18px 0 10px;">CPU 0 partial list</div>
+        <div class="partial-list" id="slow-partials"></div>
+        <div class="controls reveal" style="margin-top: 18px;">
+          <button class="btn accent" id="slow-play"><span class="glyph">▸</span> Play sequence</button>
+          <button class="btn ghost" id="slow-reset"><span class="glyph">↻</span> Reset</button>
+        </div>
+        <div class="status-line" id="slow-status">
+          <span class="timestamp">[idle]</span>Hit <strong>play</strong> to watch the active slab deactivate and a partial slab take its place.
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════ NEW SLAB ═══ -->
+<section id="newslab">
+  <div class="container">
+    <div class="split">
+      <div class="col-text">
+        <div class="section-num reveal">§ VI — Refilling from below</div>
+        <h2 class="reveal delay-1">A blank page, <em>carved</em>.</h2>
+        <div class="body reveal delay-2">
+          <p>When neither the per-CPU nor the per-node partial lists can spare a slab, the cache asks the underlying page allocator (the <em>buddy</em> allocator) for fresh contiguous pages.</p>
+          <p>The page is sliced into <code class="inline">size/align</code>-sized objects. The first word of each future object is wired into a freelist chain — <code class="inline">obj[0] → obj[1] → obj[2] → … → NULL</code> — and the result is installed as the new active slab.</p>
+          <p>The cost is real but rare; once the slab exists, all subsequent allocations from it are back on the lockless fast path.</p>
+        </div>
+      </div>
+      <div class="col-figure">
+        <div class="page-source reveal delay-2" id="page-source">
+          <span><span class="icon"></span>alloc_pages(GFP_KERNEL, order=0)</span>
+          <span id="page-status">idle</span>
+        </div>
+        <div class="slab reveal delay-3" id="new-slab" style="opacity: 0.3;">
+          <div class="slab-header">
+            <span class="slab-label">fresh slab · CPU 0</span>
+            <span class="slab-state">EMPTY</span>
+          </div>
+          <div class="slab-cells" data-cells></div>
+          <svg class="freelist-svg" data-svg></svg>
+          <div class="head-pointer hidden" data-head><span class="label">freelist</span><span class="arrow"></span></div>
+        </div>
+        <div class="controls reveal" style="margin-top: 18px;">
+          <button class="btn accent" id="new-play"><span class="glyph">▸</span> Carve a new slab</button>
+          <button class="btn ghost" id="new-reset"><span class="glyph">↻</span> Reset</button>
+        </div>
+        <div class="status-line" id="new-status">
+          <span class="timestamp">[idle]</span>The slab starts empty. Watch the kernel ask for a page, then thread the freelist through it.
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════ FREE PATH ═══ -->
+<section id="freepath">
+  <div class="container">
+    <div class="split reverse">
+      <div class="col-text">
+        <div class="section-num reveal">§ VII — kfree</div>
+        <h2 class="reveal delay-1">Push the head, mind the <em>page</em>.</h2>
+        <div class="body reveal delay-2">
+          <p>Given a pointer, the kernel can find the slab it belongs to in constant time — the page descriptor for any address points back to its <code class="inline">kmem_cache</code>.</p>
+          <p>If the object lives on the <em>current</em> per-CPU active slab, the free is the mirror of the alloc: write the current head into <code class="inline">*obj</code>, then store <code class="inline">obj</code> as the new head. Lockless.</p>
+          <p>If the object belongs to some other slab, the per-slab freelist gets the push — and the slab may transition from <em>full</em> to <em>partial</em> (joining the partial list) or even <em>partial</em> to <em>empty</em> (potentially returning to the page allocator).</p>
+        </div>
+      </div>
+      <div class="col-figure">
+        <div class="slab reveal delay-2" id="free-slab">
+          <div class="slab-header">
+            <span class="slab-label">CPU 0 · active slab</span>
+            <span class="slab-state">ACTIVE</span>
+          </div>
+          <div class="slab-cells" data-cells></div>
+          <svg class="freelist-svg" data-svg></svg>
+          <div class="head-pointer" data-head><span class="label">freelist</span><span class="arrow"></span></div>
+        </div>
+        <div class="controls reveal delay-3">
+          <button class="btn accent" id="free-rand"><span class="glyph">−</span> kfree(random)</button>
+          <button class="btn ghost" id="free-fill"><span class="glyph">+</span> Fill back up</button>
+          <button class="btn ghost" id="free-reset"><span class="glyph">↻</span> Reset</button>
+        </div>
+        <div class="status-line" id="free-status">
+          <span class="timestamp">[ready]</span>Click any <strong>filled cell</strong> directly — or hit <strong>kfree(random)</strong> — to push it back onto the freelist.
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════ PLAYGROUND ═══ -->
+<section id="playground">
+  <div class="container">
+    <div class="section-num reveal">§ VIII — Playground</div>
+    <h2 class="reveal delay-1">Try it <em>yourself</em>.</h2>
+    <p class="lede reveal delay-2">A full cache with one active slab and a partial list. kmalloc and kfree at will. Watch full slabs disappear from tracking and empty slabs return to the page allocator when the partial list overflows.</p>
+
+    <div class="playground reveal delay-3">
+      <div class="playground-header">
+        <div class="pg-title">cache: <em>demo_cachep</em> · 256 B objects</div>
+        <div class="pg-meta" id="pg-clock">t = 0</div>
+      </div>
+      <div class="pg-stats">
+        <div class="pg-stat"><span class="v" id="pg-allocs">0</span><span class="l">total kmallocs</span></div>
+        <div class="pg-stat"><span class="v" id="pg-frees">0</span><span class="l">total kfrees</span></div>
+        <div class="pg-stat"><span class="v" id="pg-live">0</span><span class="l">live objects</span></div>
+        <div class="pg-stat"><span class="v" id="pg-slabs">1</span><span class="l">slabs in cache</span></div>
+        <div class="pg-stat"><span class="v" id="pg-untracked">0</span><span class="l">untracked (full)</span></div>
+        <div class="pg-stat"><span class="v" id="pg-pages">1</span><span class="l">pages held</span></div>
+      </div>
+      <div class="pg-grid">
+        <div class="slab" id="pg-active">
+          <div class="slab-header">
+            <span class="slab-label">CPU 0 · active</span>
+            <span class="slab-state">ACTIVE</span>
+          </div>
+          <div class="slab-cells" data-cells></div>
+          <svg class="freelist-svg" data-svg></svg>
+          <div class="head-pointer" data-head><span class="label">freelist</span><span class="arrow"></span></div>
+        </div>
+        <div style="font-family: var(--mono); font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-3); margin-top: 6px;">CPU 0 partial list <span id="pg-partial-count" style="float: right;">0 slabs</span></div>
+        <div class="partial-list" id="pg-partials"></div>
+      </div>
+      <div class="controls" style="margin-top: 22px;">
+        <button class="btn accent" id="pg-alloc"><span class="glyph">+</span> kmalloc()</button>
+        <button class="btn accent" id="pg-alloc10"><span class="glyph">⚡</span> kmalloc × 10</button>
+        <button class="btn ghost" id="pg-freeall"><span class="glyph">−</span> Free a random object</button>
+        <button class="btn ghost" id="pg-reset"><span class="glyph">↻</span> Reset cache</button>
+      </div>
+      <div class="status-line" id="pg-status">
+        <span class="timestamp">[ready]</span>The active slab starts <strong>empty</strong>. Allocate to populate it, then experiment.
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════ NOTES ═══ -->
+<section id="notes">
+  <div class="container">
+    <div class="section-num reveal">§ IX — Footnotes &amp; further reading</div>
+    <h2 class="reveal delay-1">Where to go from here.</h2>
+    <div class="footnote-grid reveal delay-2">
+      <div>
+        <h4>The source</h4>
+        <p><code>mm/slub.c</code> in the Linux kernel is famously dense but readable. Start at <code>__slab_alloc()</code> and work outward. About 4,500 lines.</p>
+      </div>
+      <div>
+        <h4>The original paper</h4>
+        <p>Christoph Lameter, <em>Slub allocator</em> (2007). The design rationale, written by the author. Short, lucid.</p>
+      </div>
+      <div>
+        <h4>Adjacent allocators</h4>
+        <p>SLAB (deprecated 2024), SLOB (tiny systems, also deprecated), and the page-level <em>buddy allocator</em> below them all.</p>
+      </div>
+      <div>
+        <h4>What we glossed</h4>
+        <p>NUMA-aware promotion, CPU partial-list overflow rules, freelist-pointer hardening, and the <code>kmalloc-N</code> general-purpose caches.</p>
+      </div>
+      <div>
+        <h4>Tracing it live</h4>
+        <p><code>/sys/kernel/slab/&lt;cache&gt;/</code> exposes per-cache stats. <code>slabtop</code>, <code>perf trace -e 'kmem:*'</code>, and <code>bpftrace</code> are your friends.</p>
+      </div>
+      <div>
+        <h4>Why it matters</h4>
+        <p>Every syscall on the system passes through this code. Saving four cycles here saves them everywhere, on every machine.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="container">
+    <div class="mark">fin.</div>
+    <div class="colophon">An animated field guide · Set in Fraunces &amp; IBM Plex · Source-of-truth: mm/slub.c</div>
+  </div>
+</footer>
+
+</main>
+
+<script>
+'use strict';
+
+/* ═════════════════════════════════════════════════════════ Reveals ═══ */
+const io = new IntersectionObserver((entries) => {
+  entries.forEach(e => { if (e.isIntersecting) e.target.classList.add('in'); });
+}, { threshold: 0.12, rootMargin: '0px 0px -8% 0px' });
+document.querySelectorAll('.reveal').forEach(el => io.observe(el));
+
+/* ═════════════════════════════════════════════════════════ Slab class ═══ */
+class Slab {
+  constructor(rootEl, opts = {}) {
+    this.root = rootEl;
+    this.size = opts.size || 8;
+    this.basePtr = opts.basePtr || 0xff800000;
+    this.objSize = opts.objSize || 64;
+    this.cellsEl = rootEl.querySelector('[data-cells]');
+    this.svgEl = rootEl.querySelector('[data-svg]');
+    this.headEl = rootEl.querySelector('[data-head]');
+    this.cells = [];
+    this.head = null;
+    this.onCellClick = opts.onCellClick || null;
+    this._pendingResize = false;
+    if (this.size <= 4) rootEl.classList.add('cells-4');
+    else if (this.size <= 6) rootEl.classList.add('cells-6');
+    this.initEmpty();
+    window.addEventListener('resize', () => this.scheduleRender());
+  }
+  initEmpty() {
+    this.cells = Array.from({ length: this.size }, (_, i) => ({
+      allocated: false, next: null,
+      addr: '0x' + (this.basePtr + i * this.objSize).toString(16).slice(-4)
+    }));
+    this.head = null;
+    this.render();
+  }
+  initFresh() {
+    // All cells free, freelist is 0->1->...->n-1->null (in-order)
+    this.cells.forEach((c, i) => {
+      c.allocated = false;
+      c.next = (i < this.size - 1) ? i + 1 : null;
+    });
+    this.head = 0;
+    this.render();
+  }
+  initMixed(allocCount) {
+    // Allocate first N, freelist threads through the rest
+    const free = [];
+    this.cells.forEach((c, i) => {
+      if (i < allocCount) { c.allocated = true; c.next = null; }
+      else { c.allocated = false; free.push(i); }
+    });
+    for (let k = 0; k < free.length; k++) {
+      this.cells[free[k]].next = (k + 1 < free.length) ? free[k + 1] : null;
+    }
+    this.head = free.length ? free[0] : null;
+    this.render();
+  }
+  alloc() {
+    if (this.head === null) return null;
+    const idx = this.head;
+    const c = this.cells[idx];
+    this.head = c.next;
+    c.allocated = true;
+    c.next = null;
+    this.flashCell(idx, 'flash-alloc');
+    this.render();
+    return { idx, addr: c.addr };
+  }
+  free(idx) {
+    const c = this.cells[idx];
+    if (!c.allocated) return false;
+    c.allocated = false;
+    c.next = this.head;
+    this.head = idx;
+    this.flashCell(idx, 'flash-free');
+    this.render();
+    return true;
+  }
+  freeRandom() {
+    const occupied = this.cells.map((c, i) => c.allocated ? i : -1).filter(i => i >= 0);
+    if (!occupied.length) return false;
+    return this.free(occupied[Math.floor(Math.random() * occupied.length)]);
+  }
+  shuffleFreelist() {
+    const free = this.cells.map((c, i) => c.allocated ? -1 : i).filter(i => i >= 0);
+    // Fisher-Yates
+    for (let i = free.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [free[i], free[j]] = [free[j], free[i]];
+    }
+    for (let k = 0; k < free.length; k++) {
+      this.cells[free[k]].next = (k + 1 < free.length) ? free[k + 1] : null;
+    }
+    this.head = free.length ? free[0] : null;
+    this.render();
+  }
+  flashCell(idx, cls) {
+    const el = this.cellsEl.children[idx];
+    if (!el) return;
+    el.classList.remove('flash-alloc', 'flash-free');
+    void el.offsetWidth; // reflow
+    el.classList.add(cls);
+    setTimeout(() => el.classList.remove(cls), 600);
+  }
+  state() {
+    const allocCount = this.cells.filter(c => c.allocated).length;
+    if (allocCount === 0) return 'empty';
+    if (allocCount === this.size) return 'full';
+    return 'partial';
+  }
+  setLabel(label, state) {
+    const lab = this.root.querySelector('.slab-label');
+    const st = this.root.querySelector('.slab-state');
+    if (lab && label) lab.textContent = label;
+    if (st && state) st.textContent = state;
+  }
+  setActive(active) { this.root.classList.toggle('is-active', active); }
+  render() {
+    // (Re)build cells
+    this.cellsEl.innerHTML = '';
+    this.cells.forEach((c, i) => {
+      const el = document.createElement('div');
+      el.className = 'cell ' + (c.allocated ? 'allocated' : 'free');
+      el.dataset.idx = i;
+      el.innerHTML = `<span class="cell-idx">${i.toString().padStart(2,'0')}</span><span class="cell-content">${c.allocated ? c.addr : '∅'}</span>`;
+      if (this.onCellClick) {
+        el.addEventListener('click', () => this.onCellClick(i, c));
+      }
+      this.cellsEl.appendChild(el);
+    });
+    // State classes
+    const s = this.state();
+    this.root.classList.toggle('is-empty', s === 'empty');
+    this.root.classList.toggle('is-full', s === 'full');
+    // Head pointer + arrows depend on layout, do after a frame
+    this.scheduleRender();
+  }
+  scheduleRender() {
+    if (this._pendingResize) return;
+    this._pendingResize = true;
+    requestAnimationFrame(() => {
+      this._pendingResize = false;
+      this.drawArrows();
+      this.placeHeadPointer();
+    });
+  }
+  cellCenter(idx) {
+    const cell = this.cellsEl.children[idx];
+    if (!cell) return null;
+    const cellsRect = this.cellsEl.getBoundingClientRect();
+    const cellRect = cell.getBoundingClientRect();
+    return {
+      x: cellRect.left - cellsRect.left + cellRect.width / 2,
+      y: cellRect.top - cellsRect.top + cellRect.height / 2,
+      w: cellRect.width, h: cellRect.height,
+      top: cellRect.top - cellsRect.top,
+      bottom: cellRect.bottom - cellsRect.top
+    };
+  }
+  drawArrows() {
+    if (!this.svgEl) return;
+    const cellsRect = this.cellsEl.getBoundingClientRect();
+    const slabRect = this.root.getBoundingClientRect();
+    const offsetTop = cellsRect.top - slabRect.top;
+    const offsetLeft = cellsRect.left - slabRect.left;
+    this.svgEl.setAttribute('width', cellsRect.width);
+    this.svgEl.setAttribute('height', this.root.clientHeight);
+    this.svgEl.style.left = offsetLeft + 'px';
+    this.svgEl.style.top = '0px';
+    this.svgEl.style.right = 'auto';
+    this.svgEl.style.bottom = 'auto';
+    this.svgEl.style.width = cellsRect.width + 'px';
+    this.svgEl.style.height = this.root.clientHeight + 'px';
+    this.svgEl.innerHTML = '';
+    // Build chain: head → next → next → null
+    const chain = [];
+    let cur = this.head;
+    let guard = 0;
+    while (cur !== null && guard++ < this.size + 2) {
+      chain.push(cur);
+      cur = this.cells[cur].next;
+    }
+    if (chain.length === 0) return;
+    // Draw arc from each chain[i] to chain[i+1]
+    const ARC_DIR = -1; // arcs go upward (above cells)
+    for (let i = 0; i < chain.length - 1; i++) {
+      const from = this.cellCenter(chain[i]);
+      const to = this.cellCenter(chain[i + 1]);
+      if (!from || !to) continue;
+      // Adjust y to start from top of cell, anchor at top edge
+      const y1 = from.top + offsetTop;
+      const y2 = to.top + offsetTop;
+      const x1 = from.x;
+      const x2 = to.x;
+      const dx = Math.abs(x2 - x1);
+      const arcHeight = Math.max(18, Math.min(40, dx * 0.35));
+      const cx = (x1 + x2) / 2;
+      const cy = Math.min(y1, y2) + ARC_DIR * arcHeight;
+      const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      const d = `M ${x1} ${y1} Q ${cx} ${cy} ${x2} ${y2}`;
+      path.setAttribute('d', d);
+      this.svgEl.appendChild(path);
+      // Arrowhead at destination
+      const angle = Math.atan2(y2 - cy, x2 - cx);
+      const ah = 5;
+      const ax = x2; const ay = y2;
+      const head = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
+      const p1 = `${ax},${ay}`;
+      const p2 = `${ax - ah * Math.cos(angle - 0.5)},${ay - ah * Math.sin(angle - 0.5)}`;
+      const p3 = `${ax - ah * Math.cos(angle + 0.5)},${ay - ah * Math.sin(angle + 0.5)}`;
+      head.setAttribute('points', `${p1} ${p2} ${p3}`);
+      head.setAttribute('class', 'arrowhead');
+      this.svgEl.appendChild(head);
+    }
+    // Draw NULL marker after last cell in chain
+    const lastIdx = chain[chain.length - 1];
+    const lastCenter = this.cellCenter(lastIdx);
+    if (lastCenter) {
+      const nullText = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+      nullText.setAttribute('x', lastCenter.x);
+      nullText.setAttribute('y', lastCenter.bottom + offsetTop + 14);
+      nullText.setAttribute('text-anchor', 'middle');
+      nullText.setAttribute('class', 'null-marker');
+      nullText.textContent = '↳ NULL';
+      this.svgEl.appendChild(nullText);
+    }
+  }
+  placeHeadPointer() {
+    if (!this.headEl) return;
+    if (this.head === null) {
+      this.headEl.classList.add('null-head');
+      this.headEl.classList.remove('hidden');
+      // park to left
+      const cellsRect = this.cellsEl.getBoundingClientRect();
+      const slabRect = this.root.getBoundingClientRect();
+      this.headEl.style.left = (cellsRect.left - slabRect.left) + 'px';
+      const labelEl = this.headEl.querySelector('.label');
+      labelEl.textContent = 'freelist';
+      return;
+    }
+    this.headEl.classList.remove('hidden', 'null-head');
+    const labelEl = this.headEl.querySelector('.label');
+    labelEl.textContent = 'freelist';
+    const cellsRect = this.cellsEl.getBoundingClientRect();
+    const slabRect = this.root.getBoundingClientRect();
+    const center = this.cellCenter(this.head);
+    if (!center) return;
+    const left = cellsRect.left - slabRect.left + center.x - 28; // -half pointer width
+    this.headEl.style.left = left + 'px';
+  }
+  highlightHead(on) {
+    const cells = this.cellsEl.children;
+    Array.from(cells).forEach(el => el.classList.remove('head-target'));
+    if (on && this.head !== null) {
+      cells[this.head]?.classList.add('head-target');
+    }
+  }
+}
+
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+function setStatus(el, msg, time = null) {
+  if (!el) return;
+  const ts = time || new Date().toLocaleTimeString('en-GB', { hour12: false });
+  el.innerHTML = `<span class="timestamp">[${ts}]</span>${msg}`;
+}
+
+/* ═════════════════════════════════════════════════════════ Hero ═══ */
+const heroSlab = new Slab(document.getElementById('hero-slab'), { size: 8, basePtr: 0xff800000, objSize: 256 });
+heroSlab.initMixed(3);
+heroSlab.setActive(true);
+// Ambient: every 2.5s, alloc or free
+async function heroAmbient() {
+  await sleep(1400);
+  while (true) {
+    const occ = heroSlab.cells.filter(c => c.allocated).length;
+    const free = heroSlab.size - occ;
+    let action;
+    if (occ === 0) action = 'alloc';
+    else if (free === 0) action = 'free';
+    else action = Math.random() < 0.55 ? 'alloc' : 'free';
+    if (action === 'alloc') heroSlab.alloc();
+    else heroSlab.freeRandom();
+    await sleep(1800 + Math.random() * 1400);
+  }
+}
+heroAmbient();
+
+/* ═════════════════════════════════════════════════════════ Anatomy ═══ */
+async function anatomyLoop() {
+  const cards = document.querySelectorAll('#anatomy-diagram .anatomy-card');
+  await sleep(1000);
+  while (true) {
+    for (let i = 0; i < cards.length; i++) {
+      cards.forEach(c => c.classList.remove('glow'));
+      cards[i].classList.add('glow');
+      await sleep(1400);
+    }
+    cards.forEach(c => c.classList.remove('glow'));
+    await sleep(900);
+  }
+}
+anatomyLoop();
+
+/* ═════════════════════════════════════════════════════════ Freelist demo ═══ */
+const flSlab = new Slab(document.getElementById('freelist-slab'), { size: 8, basePtr: 0xff8e0000, objSize: 256 });
+flSlab.initMixed(3);
+async function flChainAnim() {
+  // Animate the chain by sequentially highlighting each free cell
+  const chain = [];
+  let cur = flSlab.head; let guard = 0;
+  while (cur !== null && guard++ < flSlab.size + 2) { chain.push(cur); cur = flSlab.cells[cur].next; }
+  for (const idx of chain) {
+    const el = flSlab.cellsEl.children[idx];
+    el?.classList.add('head-target');
+    await sleep(420);
+    el?.classList.remove('head-target');
+  }
+}
+document.getElementById('freelist-replay').addEventListener('click', flChainAnim);
+document.getElementById('freelist-shuffle').addEventListener('click', () => { flSlab.shuffleFreelist(); flChainAnim(); });
+setTimeout(flChainAnim, 1800);
+
+/* ═════════════════════════════════════════════════════════ Fast path ═══ */
+const fastSlab = new Slab(document.getElementById('fast-slab'), { size: 8, basePtr: 0xff900000, objSize: 256 });
+fastSlab.initMixed(3);
+fastSlab.setActive(true);
+const fastStatus = document.getElementById('fast-status');
+const fastBytes = document.getElementById('fast-bytes');
+const fastRate = document.getElementById('fast-rate');
+let fastAllocCount = 0;
+let fastTimes = [];
+function updateFastFoot() {
+  const occ = fastSlab.cells.filter(c => c.allocated).length;
+  fastBytes.textContent = `${occ} alloc · ${fastSlab.size - occ} free`;
+  // recent rate (last 3 seconds)
+  const now = performance.now();
+  fastTimes = fastTimes.filter(t => now - t < 3000);
+  fastRate.textContent = fastTimes.length ? `${Math.round(fastTimes.length / 3 * 10) / 10}/s` : '0 alloc/s';
+}
+async function fastAllocAnim() {
+  if (fastSlab.head === null) {
+    setStatus(fastStatus, '<strong>freelist = NULL</strong> · slow path would take over here.');
+    return;
+  }
+  fastSlab.highlightHead(true);
+  await sleep(450);
+  const r = fastSlab.alloc();
+  fastSlab.highlightHead(false);
+  fastAllocCount++;
+  fastTimes.push(performance.now());
+  updateFastFoot();
+  setStatus(fastStatus, `<strong>kmalloc()</strong> = ${r.addr} · freelist head advanced to next free object.`);
+}
+document.getElementById('fast-alloc').addEventListener('click', fastAllocAnim);
+document.getElementById('fast-burst').addEventListener('click', async () => {
+  for (let i = 0; i < 5; i++) { await fastAllocAnim(); await sleep(280); }
+});
+document.getElementById('fast-reset').addEventListener('click', () => {
+  fastSlab.initMixed(3); updateFastFoot();
+  setStatus(fastStatus, 'Reset · 3 alloc / 5 free.');
+});
+updateFastFoot();
+setInterval(updateFastFoot, 1000);
+
+/* ═════════════════════════════════════════════════════════ Slow path ═══ */
+const slowSlab = new Slab(document.getElementById('slow-slab'), { size: 8, basePtr: 0xffa00000, objSize: 256 });
+const slowPartials = document.getElementById('slow-partials');
+const slowStatus = document.getElementById('slow-status');
+const slowSteps = document.querySelectorAll('#slow-steps li');
+
+function renderSlowPartials(state) {
+  slowPartials.innerHTML = '';
+  state.forEach((s, i) => {
+    const div = document.createElement('div');
+    div.className = 'slab-mini' + (s.promoting ? ' promoting' : '');
+    div.innerHTML = `<span class="name">slab #${s.id}</span><div class="mini-cells">${
+      s.cells.map(a => `<div class="mc${a ? '' : ' free'}"></div>`).join('')
+    }</div>`;
+    slowPartials.appendChild(div);
+  });
+}
+function slowReset() {
+  slowSlab.initMixed(8); // full slab
+  // Override: a "full" slab where cells stay allocated and head = null
+  slowSlab.cells.forEach(c => { c.allocated = true; c.next = null; });
+  slowSlab.head = null;
+  slowSlab.render();
+  slowSlab.setLabel('CPU 0 · active slab', 'ACTIVE');
+  slowSlab.setActive(true);
+  renderSlowPartials([
+    { id: 1, cells: [1,1,0,1,0,1,1,0] },
+    { id: 2, cells: [1,0,0,1,1,0,1,0] },
+    { id: 3, cells: [0,1,0,0,1,1,0,0] }
+  ]);
+  slowSteps.forEach(s => s.classList.remove('active', 'done'));
+  setStatus(slowStatus, 'Active slab is <strong>full</strong>. freelist = NULL.');
+}
+slowReset();
+
+async function slowPlay() {
+  slowReset();
+  await sleep(500);
+  // Step 1: NULL head
+  slowSteps[0].classList.add('active');
+  setStatus(slowStatus, '<strong>step 01</strong> · freelist hits NULL.');
+  await sleep(1100);
+  slowSteps[0].classList.remove('active'); slowSteps[0].classList.add('done');
+  // Step 2: detach
+  slowSteps[1].classList.add('active');
+  slowSlab.setActive(false);
+  slowSlab.setLabel('detached slab (untracked)', 'FULL');
+  setStatus(slowStatus, '<strong>step 02</strong> · active slab dropped — SLUB does not track full slabs.');
+  slowSlab.root.style.transition = 'opacity .6s, transform .6s';
+  slowSlab.root.style.opacity = '0.35';
+  slowSlab.root.style.transform = 'translateX(-12px)';
+  await sleep(1200);
+  slowSteps[1].classList.remove('active'); slowSteps[1].classList.add('done');
+  // Step 3: promote head of partial
+  slowSteps[2].classList.add('active');
+  setStatus(slowStatus, '<strong>step 03</strong> · head of CPU partial list promoted to active.');
+  // Visualise: highlight first partial entry
+  const minis = slowPartials.querySelectorAll('.slab-mini');
+  if (minis[0]) minis[0].classList.add('promoting');
+  await sleep(900);
+  // Replace active slab with partial[0]
+  slowSlab.root.style.opacity = '1';
+  slowSlab.root.style.transform = 'translateX(0)';
+  slowSlab.setLabel('CPU 0 · active slab (was partial #1)', 'ACTIVE');
+  slowSlab.setActive(true);
+  // Set up cells: 5 alloc, 3 free in this slab
+  slowSlab.cells.forEach((c, i) => {
+    if (i < 5) { c.allocated = true; c.next = null; }
+    else { c.allocated = false; c.next = (i < 7) ? i + 1 : null; }
+  });
+  slowSlab.head = 5;
+  slowSlab.render();
+  // Remove promoted mini from partial list
+  await sleep(600);
+  renderSlowPartials([
+    { id: 2, cells: [1,0,0,1,1,0,1,0] },
+    { id: 3, cells: [0,1,0,0,1,1,0,0] }
+  ]);
+  await sleep(700);
+  slowSteps[2].classList.remove('active'); slowSteps[2].classList.add('done');
+  // Step 4: alloc proceeds
+  slowSteps[3].classList.add('active');
+  setStatus(slowStatus, '<strong>step 04</strong> · allocation proceeds — back on the fast path.');
+  slowSlab.alloc();
+  await sleep(900);
+  slowSteps[3].classList.remove('active'); slowSteps[3].classList.add('done');
+  setStatus(slowStatus, '<strong>done</strong> · slow path resolved in microseconds. Press reset to run again.');
+}
+document.getElementById('slow-play').addEventListener('click', slowPlay);
+document.getElementById('slow-reset').addEventListener('click', () => {
+  slowSlab.root.style.opacity = '1';
+  slowSlab.root.style.transform = 'translateX(0)';
+  slowReset();
+});
+
+/* ═════════════════════════════════════════════════════════ New slab ═══ */
+const newSlab = new Slab(document.getElementById('new-slab'), { size: 8, basePtr: 0xffb00000, objSize: 256 });
+const newStatus = document.getElementById('new-status');
+const pageSource = document.getElementById('page-source');
+const pageStatus = document.getElementById('page-status');
+
+function newReset() {
+  newSlab.initEmpty();
+  newSlab.head = null;
+  newSlab.cells.forEach(c => { c.allocated = false; c.next = null; });
+  newSlab.render();
+  newSlab.setActive(false);
+  newSlab.setLabel('fresh slab · CPU 0', 'EMPTY');
+  newSlab.root.style.opacity = '0.3';
+  pageSource.classList.remove('firing');
+  pageStatus.textContent = 'idle';
+  setStatus(newStatus, 'No slab yet. Press play to walk through the page-allocator path.');
+}
+newReset();
+
+async function newPlay() {
+  newReset();
+  await sleep(500);
+  // Page allocator fires
+  pageSource.classList.add('firing');
+  pageStatus.textContent = 'returning page →';
+  setStatus(newStatus, '<strong>alloc_pages()</strong> · buddy allocator returns one 4 KB page.');
+  await sleep(1100);
+  // Slab appears
+  newSlab.root.style.transition = 'opacity .6s';
+  newSlab.root.style.opacity = '1';
+  setStatus(newStatus, '<strong>page received</strong> · carving 8 × 256 B objects.');
+  await sleep(700);
+  pageStatus.textContent = 'page → 0xffb00000';
+  // Build freelist progressively
+  newSlab.setLabel('fresh slab · CPU 0', 'BUILDING');
+  for (let i = 0; i < newSlab.size; i++) {
+    newSlab.cells[i].allocated = false;
+    newSlab.cells[i].next = (i < newSlab.size - 1) ? i + 1 : null;
+    if (i === 0) newSlab.head = 0;
+    newSlab.render();
+    // pulse the cell being added
+    newSlab.cellsEl.children[i]?.classList.add('head-target');
+    await sleep(170);
+    newSlab.cellsEl.children[i]?.classList.remove('head-target');
+  }
+  await sleep(400);
+  // Install as active
+  newSlab.setLabel('CPU 0 · active slab', 'ACTIVE');
+  newSlab.setActive(true);
+  pageSource.classList.remove('firing');
+  pageStatus.textContent = 'page returned';
+  setStatus(newStatus, '<strong>installed</strong> · slab is now the per-CPU active slab. All future allocations resolve on the fast path.');
+}
+document.getElementById('new-play').addEventListener('click', newPlay);
+document.getElementById('new-reset').addEventListener('click', newReset);
+
+/* ═════════════════════════════════════════════════════════ Free path ═══ */
+const freeSlab = new Slab(document.getElementById('free-slab'), {
+  size: 8, basePtr: 0xffc00000, objSize: 256,
+  onCellClick: (idx, cell) => {
+    if (cell.allocated) {
+      freeSlab.free(idx);
+      const occ = freeSlab.cells.filter(c => c.allocated).length;
+      setStatus(freeStatus, `<strong>kfree(${cell.addr})</strong> · pushed onto freelist head. ${occ} live.`);
+    }
+  }
+});
+freeSlab.initMixed(6);
+freeSlab.setActive(true);
+const freeStatus = document.getElementById('free-status');
+
+document.getElementById('free-rand').addEventListener('click', () => {
+  const occ = freeSlab.cells.filter(c => c.allocated);
+  if (!occ.length) { setStatus(freeStatus, 'Slab is empty — nothing to free.'); return; }
+  const before = freeSlab.cells.findIndex(c => c.allocated);
+  freeSlab.freeRandom();
+  const live = freeSlab.cells.filter(c => c.allocated).length;
+  setStatus(freeStatus, `<strong>kfree(random)</strong> · pushed to head of freelist. ${live} live.`);
+});
+document.getElementById('free-fill').addEventListener('click', () => {
+  while (freeSlab.head !== null) freeSlab.alloc();
+  setStatus(freeStatus, 'Slab filled. <strong>freelist = NULL</strong>. Free some objects to repopulate.');
+});
+document.getElementById('free-reset').addEventListener('click', () => {
+  freeSlab.initMixed(6);
+  setStatus(freeStatus, 'Reset · 6 alloc / 2 free.');
+});
+
+/* ═════════════════════════════════════════════════════════ Playground ═══ */
+const pgSlab = new Slab(document.getElementById('pg-active'), {
+  size: 8, basePtr: 0xfff00000, objSize: 256,
+  onCellClick: (idx, cell) => {
+    if (cell.allocated) {
+      pgFree(idx);
+    }
+  }
+});
+const pgPartials = document.getElementById('pg-partials');
+const pgStatus = document.getElementById('pg-status');
+const pgClock = document.getElementById('pg-clock');
+const pgPartialCount = document.getElementById('pg-partial-count');
+
+let pgState = null;
+function pgReset() {
+  pgSlab.initFresh();
+  pgSlab.setActive(true);
+  pgSlab.setLabel('CPU 0 · active', 'ACTIVE');
+  pgState = {
+    allocs: 0, frees: 0, t: 0,
+    partials: [], // [{id, cells: bool[8]}]
+    untracked: [], // full slabs SLUB has dropped — only re-tracked on free
+    slabSerial: 1,
+    activeId: 1
+  };
+  renderPgPartials();
+  updatePgStats();
+  setStatus(pgStatus, 'Cache reset · 1 fresh slab, 8 free objects.');
+  pgClock.textContent = 't = 0';
+}
+function renderPgPartials() {
+  pgPartials.innerHTML = '';
+  pgState.partials.forEach(s => {
+    const div = document.createElement('div');
+    div.className = 'slab-mini';
+    const occ = s.cells.filter(Boolean).length;
+    div.innerHTML = `<span class="name">slab #${s.id}</span><div class="mini-cells">${
+      s.cells.map(a => `<div class="mc${a ? '' : ' free'}"></div>`).join('')
+    }</div><span style="font-size:9px;color:var(--ink-3);">${occ}/8</span>`;
+    pgPartials.appendChild(div);
+  });
+  pgPartialCount.textContent = `${pgState.partials.length} slab${pgState.partials.length === 1 ? '' : 's'}`;
+}
+function updatePgStats() {
+  document.getElementById('pg-allocs').textContent = pgState.allocs;
+  document.getElementById('pg-frees').textContent = pgState.frees;
+  const liveActive = pgSlab.cells.filter(c => c.allocated).length;
+  const livePartial = pgState.partials.reduce((sum, s) => sum + s.cells.filter(Boolean).length, 0);
+  const liveUntracked = pgState.untracked.reduce((sum, s) => sum + s.cells.filter(Boolean).length, 0);
+  document.getElementById('pg-live').textContent = liveActive + livePartial + liveUntracked;
+  const slabs = 1 + pgState.partials.length + pgState.untracked.length;
+  document.getElementById('pg-slabs').textContent = slabs;
+  document.getElementById('pg-pages').textContent = slabs;
+  document.getElementById('pg-untracked').textContent = pgState.untracked.length;
+}
+function tick() { pgState.t++; pgClock.textContent = `t = ${pgState.t}`; }
+async function pgAlloc() {
+  tick();
+  // If active has free, fast path
+  if (pgSlab.head !== null) {
+    const r = pgSlab.alloc();
+    pgState.allocs++;
+    setStatus(pgStatus, `<strong>fast path</strong> · kmalloc → ${r.addr}`);
+    updatePgStats();
+    return;
+  }
+  // Active is full → SLUB drops it (no list of full slabs!). Move to untracked.
+  const droppedId = pgState.activeId;
+  pgState.untracked.push({
+    id: droppedId,
+    cells: pgSlab.cells.map(c => c.allocated)
+  });
+  // Slow path 1: promote a partial
+  if (pgState.partials.length > 0) {
+    const promoted = pgState.partials.shift();
+    setStatus(pgStatus, `<strong>slow path</strong> · active slab #${droppedId} full → untracked. Slab #${promoted.id} promoted from partial list. <em>SLUB keeps no list of full slabs.</em>`);
+    pgState.activeId = promoted.id;
+    // Restore active slab cells from promoted state
+    pgSlab.cells.forEach((c, i) => {
+      c.allocated = promoted.cells[i];
+      c.next = null;
+    });
+    // Build freelist over free indices in order
+    let prev = null;
+    for (let i = pgSlab.size - 1; i >= 0; i--) {
+      if (!pgSlab.cells[i].allocated) {
+        pgSlab.cells[i].next = prev;
+        prev = i;
+      }
+    }
+    pgSlab.head = prev;
+    pgSlab.setLabel(`CPU 0 · active (slab #${promoted.id})`, 'ACTIVE');
+    pgSlab.render();
+    await sleep(280);
+    const r = pgSlab.alloc();
+    pgState.allocs++;
+    setStatus(pgStatus, `<strong>slow path complete</strong> · kmalloc → ${r.addr}`);
+    renderPgPartials();
+    updatePgStats();
+    return;
+  }
+  // Slow path 2: ask for new slab from page allocator
+  pgState.slabSerial++;
+  pgState.activeId = pgState.slabSerial;
+  setStatus(pgStatus, `<strong>page allocator</strong> · slab #${droppedId} full → untracked. alloc_pages() returned a fresh page → carved into slab #${pgState.slabSerial}`);
+  pgSlab.cells.forEach((c, i) => {
+    c.allocated = false;
+    c.next = (i < pgSlab.size - 1) ? i + 1 : null;
+  });
+  pgSlab.head = 0;
+  pgSlab.setLabel(`CPU 0 · active (slab #${pgState.slabSerial})`, 'ACTIVE');
+  pgSlab.render();
+  await sleep(300);
+  const r = pgSlab.alloc();
+  pgState.allocs++;
+  setStatus(pgStatus, `<strong>fresh slab installed</strong> · kmalloc → ${r.addr}`);
+  updatePgStats();
+}
+function pgFree(idx) {
+  tick();
+  const cell = pgSlab.cells[idx];
+  if (!cell.allocated) return;
+  const addr = cell.addr;
+  pgSlab.free(idx);
+  pgState.frees++;
+  setStatus(pgStatus, `<strong>kfree(${addr})</strong> · pushed onto active slab freelist (lockless).`);
+  updatePgStats();
+}
+function pgFreeRandom() {
+  // Pool of free targets across active + partials + untracked
+  const activeOcc = pgSlab.cells.map((c,i) => c.allocated ? i : -1).filter(i => i >= 0);
+  const partialOptions = [];
+  pgState.partials.forEach((s, si) => s.cells.forEach((a, ci) => { if (a) partialOptions.push({ si, ci }); }));
+  const untrackedOptions = [];
+  pgState.untracked.forEach((s, si) => s.cells.forEach((a, ci) => { if (a) untrackedOptions.push({ si, ci }); }));
+  const total = activeOcc.length + partialOptions.length + untrackedOptions.length;
+  if (total === 0) { setStatus(pgStatus, 'Nothing to free.'); return; }
+  const pick = Math.floor(Math.random() * total);
+  if (pick < activeOcc.length) {
+    pgFree(activeOcc[pick]);
+    return;
+  }
+  if (pick < activeOcc.length + partialOptions.length) {
+    const sel = partialOptions[pick - activeOcc.length];
+    const slab = pgState.partials[sel.si];
+    slab.cells[sel.ci] = false;
+    pgState.frees++;
+    tick();
+    const occ = slab.cells.filter(Boolean).length;
+    if (occ === 0 && pgState.partials.length > 2) {
+      pgState.partials.splice(sel.si, 1);
+      setStatus(pgStatus, `<strong>slab #${slab.id} empty</strong> · returned to page allocator.`);
+    } else if (occ === 0) {
+      setStatus(pgStatus, `<strong>slab #${slab.id} empty</strong> · kept on partial list as reserve.`);
+    } else {
+      setStatus(pgStatus, `<strong>kfree</strong> on partial slab #${slab.id} · ${occ}/8 still live.`);
+    }
+    renderPgPartials();
+    updatePgStats();
+    return;
+  }
+  // Pick lands on an untracked (full) slab → SLUB re-tracks it as partial
+  const sel = untrackedOptions[pick - activeOcc.length - partialOptions.length];
+  const slab = pgState.untracked[sel.si];
+  slab.cells[sel.ci] = false;
+  pgState.frees++;
+  tick();
+  pgState.untracked.splice(sel.si, 1);
+  pgState.partials.push(slab);
+  const occ = slab.cells.filter(Boolean).length;
+  setStatus(pgStatus, `<strong>kfree</strong> on untracked slab #${slab.id} · re-tracked onto partial list (${occ}/8 live). <em>The free path locates the slab via the object's page metadata, no list traversal needed.</em>`);
+  renderPgPartials();
+  updatePgStats();
+}
+
+document.getElementById('pg-alloc').addEventListener('click', pgAlloc);
+document.getElementById('pg-alloc10').addEventListener('click', async () => {
+  for (let i = 0; i < 10; i++) { await pgAlloc(); await sleep(120); }
+});
+document.getElementById('pg-freeall').addEventListener('click', pgFreeRandom);
+document.getElementById('pg-reset').addEventListener('click', pgReset);
+
+// Helper: when active becomes full, demote it to partial (for realism in playground)
+// Actually in SLUB full slabs aren't tracked, so we drop them. But let's simulate
+// the *reverse*: when we have allocs that exceed active, the previous active became
+// "full" — we already drop it. Let's also handle the case where after frees the active
+// has all free → keeps as active (correct).
+
+// Initialize playground
+pgReset();
+</script>
+
+</body>
+</html>

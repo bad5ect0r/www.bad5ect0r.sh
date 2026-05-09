@@ -1,0 +1,1405 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>The Buddy Allocator — A Visual Walkthrough</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300..900;1,9..144,300..900&family=JetBrains+Mono:wght@400;500;700&family=Geist:wght@300;400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --paper: #f1eadb;
+    --paper-2: #e8dfc9;
+    --ink: #1a1410;
+    --ink-soft: #4a3f33;
+    --rule: #d4c8a8;
+    --accent: #c8341a;       /* allocated / hot */
+    --accent-2: #2d5d3f;     /* free / cool */
+    --gold: #b8923a;
+    --shadow: rgba(26,20,16,0.12);
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html { scroll-behavior: smooth; }
+
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: 'Geist', system-ui, sans-serif;
+    font-weight: 400;
+    line-height: 1.6;
+    overflow-x: hidden;
+    background-image:
+      radial-gradient(circle at 20% 30%, rgba(184,146,58,0.05) 0, transparent 50%),
+      radial-gradient(circle at 80% 70%, rgba(200,52,26,0.04) 0, transparent 50%);
+  }
+
+  /* paper grain */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    opacity: 0.35;
+    mix-blend-mode: multiply;
+    z-index: 1;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0.1 0 0 0 0 0.08 0 0 0 0 0.06 0 0 0 0.18 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  }
+
+  .wrap {
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 0 32px;
+    position: relative;
+    z-index: 2;
+  }
+
+  /* ═══════════════════════════════════════════════════════════════
+     HERO
+     ═══════════════════════════════════════════════════════════════ */
+  header.hero {
+    padding: 80px 0 60px;
+    border-bottom: 1px solid var(--rule);
+    position: relative;
+  }
+
+  .meta-line {
+    display: flex;
+    justify-content: space-between;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.2em;
+    color: var(--ink-soft);
+    margin-bottom: 60px;
+    padding-bottom: 16px;
+    border-bottom: 1px solid var(--rule);
+  }
+
+  .meta-line span:nth-child(2) { color: var(--accent); }
+
+  .eyebrow {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.3em;
+    color: var(--accent);
+    margin-bottom: 24px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .eyebrow::before {
+    content: '';
+    width: 32px;
+    height: 1px;
+    background: var(--accent);
+  }
+
+  h1 {
+    font-family: 'Fraunces', serif;
+    font-weight: 400;
+    font-size: clamp(48px, 8vw, 112px);
+    line-height: 0.92;
+    letter-spacing: -0.03em;
+    margin-bottom: 32px;
+    font-variation-settings: 'opsz' 144, 'SOFT' 50;
+  }
+
+  h1 em {
+    font-style: italic;
+    font-weight: 300;
+    color: var(--accent);
+    font-variation-settings: 'opsz' 144, 'SOFT' 100;
+  }
+
+  .lede {
+    font-family: 'Fraunces', serif;
+    font-size: clamp(18px, 2vw, 22px);
+    font-weight: 300;
+    line-height: 1.5;
+    max-width: 640px;
+    color: var(--ink-soft);
+    font-variation-settings: 'opsz' 24;
+  }
+
+  .hero-figure {
+    margin-top: 60px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    color: var(--ink-soft);
+  }
+
+  .hero-blocks {
+    display: flex;
+    gap: 4px;
+    height: 24px;
+  }
+
+  .hero-blocks div {
+    background: var(--ink);
+    flex: 1;
+    transform-origin: left;
+    animation: heroPulse 4s ease-in-out infinite;
+  }
+  .hero-blocks div:nth-child(1) { background: var(--accent); animation-delay: 0s; }
+  .hero-blocks div:nth-child(2) { background: var(--ink); animation-delay: 0.2s; }
+  .hero-blocks div:nth-child(3) { background: var(--accent-2); animation-delay: 0.4s; }
+  .hero-blocks div:nth-child(4) { background: var(--ink); animation-delay: 0.6s; }
+  .hero-blocks div:nth-child(5) { background: var(--gold); animation-delay: 0.8s; }
+  .hero-blocks div:nth-child(6) { background: var(--ink); animation-delay: 1.0s; }
+  .hero-blocks div:nth-child(7) { background: var(--accent); animation-delay: 1.2s; }
+  .hero-blocks div:nth-child(8) { background: var(--ink); animation-delay: 1.4s; }
+
+  @keyframes heroPulse {
+    0%, 100% { transform: scaleY(1); opacity: 1; }
+    50% { transform: scaleY(0.4); opacity: 0.6; }
+  }
+
+  /* ═══════════════════════════════════════════════════════════════
+     SECTION FRAMEWORK
+     ═══════════════════════════════════════════════════════════════ */
+  section {
+    padding: 100px 0;
+    border-bottom: 1px solid var(--rule);
+  }
+
+  .sec-num {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    letter-spacing: 0.25em;
+    color: var(--accent);
+    text-transform: uppercase;
+    margin-bottom: 24px;
+  }
+
+  h2 {
+    font-family: 'Fraunces', serif;
+    font-weight: 400;
+    font-size: clamp(36px, 5vw, 56px);
+    line-height: 1;
+    letter-spacing: -0.02em;
+    margin-bottom: 32px;
+    font-variation-settings: 'opsz' 96, 'SOFT' 30;
+  }
+  h2 em { font-style: italic; color: var(--accent); }
+
+  .prose {
+    font-family: 'Fraunces', serif;
+    font-weight: 350;
+    font-size: 19px;
+    line-height: 1.55;
+    max-width: 640px;
+    color: var(--ink);
+    font-variation-settings: 'opsz' 18;
+  }
+  .prose + .prose { margin-top: 18px; }
+  .prose code {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.85em;
+    background: var(--paper-2);
+    padding: 2px 6px;
+    border-radius: 3px;
+    border: 1px solid var(--rule);
+  }
+  .prose strong {
+    font-weight: 600;
+    color: var(--ink);
+    background: linear-gradient(transparent 60%, rgba(200,52,26,0.18) 60%);
+    padding: 0 2px;
+  }
+
+  /* ═══════════════════════════════════════════════════════════════
+     MEMORY VISUALIZER
+     ═══════════════════════════════════════════════════════════════ */
+
+  .viz {
+    margin-top: 56px;
+    background: var(--paper-2);
+    border: 1px solid var(--rule);
+    padding: 36px;
+    position: relative;
+    box-shadow: 0 1px 0 var(--rule), 0 12px 30px -20px var(--shadow);
+  }
+
+  .viz-corner {
+    position: absolute;
+    top: -1px;
+    left: -1px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    background: var(--ink);
+    color: var(--paper);
+    padding: 4px 10px;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+  }
+
+  .viz-title {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    color: var(--ink-soft);
+    margin-bottom: 24px;
+    padding-left: 100px;
+  }
+
+  /* memory bar - shows pages */
+  .mem-row {
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+  }
+
+  .order-row {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }
+
+  .order-label {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    color: var(--ink-soft);
+    width: 90px;
+    flex-shrink: 0;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+  }
+  .order-label b {
+    color: var(--accent);
+    font-weight: 700;
+  }
+
+  .order-track {
+    flex: 1;
+    display: flex;
+    gap: 2px;
+    height: 36px;
+    position: relative;
+  }
+
+  .blk {
+    background: var(--paper);
+    border: 1px solid var(--rule);
+    flex: 1;
+    transition: all 0.5s cubic-bezier(0.4, 0, 0.2, 1);
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    color: var(--ink-soft);
+  }
+
+  .blk.free {
+    background: var(--paper);
+    border-color: var(--accent-2);
+  }
+  .blk.free::before {
+    content: 'FREE';
+    color: var(--accent-2);
+    font-weight: 700;
+  }
+
+  .blk.alloc {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: var(--paper);
+  }
+  .blk.alloc::before { content: 'USED'; }
+
+  .blk.split {
+    background: repeating-linear-gradient(
+      45deg,
+      var(--paper-2),
+      var(--paper-2) 4px,
+      var(--paper) 4px,
+      var(--paper) 8px
+    );
+    border-color: var(--rule);
+    color: transparent;
+  }
+
+  .blk.flash {
+    animation: flashHighlight 0.8s ease-out;
+  }
+  @keyframes flashHighlight {
+    0% { box-shadow: 0 0 0 0 var(--accent); }
+    50% { box-shadow: 0 0 0 4px var(--accent); }
+    100% { box-shadow: 0 0 0 0 transparent; }
+  }
+
+  /* ═══════════════════════════════════════════════════════════════
+     FREE LISTS VISUALIZATION
+     ═══════════════════════════════════════════════════════════════ */
+  .freelists {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    margin-top: 24px;
+  }
+
+  .fl-row {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+  }
+
+  .fl-label {
+    width: 100px;
+    flex-shrink: 0;
+    color: var(--ink-soft);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+  }
+  .fl-label b { color: var(--ink); font-weight: 700; }
+
+  .fl-arrow {
+    color: var(--ink-soft);
+    font-size: 14px;
+  }
+
+  .fl-list {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    flex: 1;
+    min-height: 32px;
+  }
+
+  .fl-node {
+    display: inline-flex;
+    align-items: center;
+    background: var(--paper);
+    border: 1px solid var(--accent-2);
+    padding: 5px 12px;
+    color: var(--accent-2);
+    font-weight: 500;
+    font-size: 11px;
+    transition: all 0.4s ease;
+    transform-origin: center;
+  }
+  .fl-node.entering { animation: nodeIn 0.5s ease forwards; }
+  .fl-node.exiting { animation: nodeOut 0.4s ease forwards; }
+  @keyframes nodeIn {
+    from { opacity: 0; transform: scale(0.6); }
+    to { opacity: 1; transform: scale(1); }
+  }
+  @keyframes nodeOut {
+    from { opacity: 1; transform: scale(1); }
+    to { opacity: 0; transform: scale(0.6) translateX(-20px); }
+  }
+
+  .fl-empty {
+    color: var(--ink-soft);
+    opacity: 0.5;
+    font-style: italic;
+  }
+
+  /* ═══════════════════════════════════════════════════════════════
+     CONTROLS / PLAYGROUND
+     ═══════════════════════════════════════════════════════════════ */
+  .controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin-top: 28px;
+    padding-top: 24px;
+    border-top: 1px dashed var(--rule);
+    align-items: center;
+  }
+
+  .ctrl-label {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.2em;
+    color: var(--ink-soft);
+    margin-right: 8px;
+  }
+
+  button {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    padding: 10px 16px;
+    background: var(--paper);
+    border: 1px solid var(--ink);
+    color: var(--ink);
+    cursor: pointer;
+    transition: all 0.2s ease;
+    font-weight: 500;
+  }
+  button:hover {
+    background: var(--ink);
+    color: var(--paper);
+    transform: translate(-1px, -1px);
+    box-shadow: 2px 2px 0 var(--ink);
+  }
+  button:active { transform: translate(0, 0); box-shadow: none; }
+  button:disabled { opacity: 0.4; cursor: not-allowed; transform: none; box-shadow: none; }
+  button.primary {
+    background: var(--accent);
+    color: var(--paper);
+    border-color: var(--accent);
+  }
+  button.primary:hover {
+    background: var(--ink);
+    border-color: var(--ink);
+  }
+  button.danger {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+  button.danger:hover {
+    background: var(--accent);
+    color: var(--paper);
+  }
+  button.ghost {
+    background: transparent;
+    border: 1px solid var(--rule);
+    color: var(--ink-soft);
+  }
+
+  /* ═══════════════════════════════════════════════════════════════
+     LOG / TRACE
+     ═══════════════════════════════════════════════════════════════ */
+  .trace {
+    margin-top: 24px;
+    background: var(--ink);
+    color: var(--paper);
+    padding: 20px 24px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    max-height: 200px;
+    overflow-y: auto;
+    border: 1px solid var(--ink);
+    line-height: 1.7;
+  }
+  .trace-line { animation: traceIn 0.3s ease; }
+  .trace-line .tag {
+    display: inline-block;
+    width: 70px;
+    color: var(--gold);
+    text-transform: uppercase;
+    font-size: 10px;
+    letter-spacing: 0.15em;
+  }
+  .trace-line .tag.ok { color: #6bcf7f; }
+  .trace-line .tag.warn { color: #ffb347; }
+  .trace-line .tag.err { color: #ff6b6b; }
+  @keyframes traceIn {
+    from { opacity: 0; transform: translateX(-8px); }
+    to { opacity: 1; transform: translateX(0); }
+  }
+  .trace::-webkit-scrollbar { width: 8px; }
+  .trace::-webkit-scrollbar-track { background: var(--ink); }
+  .trace::-webkit-scrollbar-thumb { background: var(--ink-soft); }
+
+  /* ═══════════════════════════════════════════════════════════════
+     BUDDY MATH
+     ═══════════════════════════════════════════════════════════════ */
+  .math-grid {
+    margin-top: 48px;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 32px;
+  }
+  @media (max-width: 720px) {
+    .math-grid { grid-template-columns: 1fr; }
+  }
+
+  .math-card {
+    background: var(--paper-2);
+    border: 1px solid var(--rule);
+    padding: 28px;
+    position: relative;
+  }
+  .math-card h3 {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.2em;
+    color: var(--accent);
+    margin-bottom: 18px;
+  }
+  .math-card .formula {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 14px;
+    line-height: 2;
+    color: var(--ink);
+  }
+  .math-card .formula b {
+    color: var(--accent);
+    font-weight: 700;
+  }
+  .math-card .formula .bit {
+    display: inline-block;
+    width: 22px;
+    text-align: center;
+    background: var(--paper);
+    border: 1px solid var(--rule);
+    padding: 2px 0;
+    margin: 0 1px;
+  }
+  .math-card .formula .bit.flip {
+    background: var(--accent);
+    color: var(--paper);
+    border-color: var(--accent);
+    animation: bitFlip 1.5s ease infinite;
+  }
+  @keyframes bitFlip {
+    0%, 100% { transform: scale(1); }
+    50% { transform: scale(1.15); box-shadow: 0 0 0 3px var(--accent); }
+  }
+
+  /* ═══════════════════════════════════════════════════════════════
+     STEP INDICATOR
+     ═══════════════════════════════════════════════════════════════ */
+  .step-display {
+    margin-top: 24px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 14px 20px;
+    background: var(--paper);
+    border-left: 3px solid var(--accent);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px;
+    min-height: 48px;
+  }
+  .step-display .step-tag {
+    color: var(--accent);
+    font-weight: 700;
+    text-transform: uppercase;
+    font-size: 11px;
+    letter-spacing: 0.15em;
+  }
+
+  /* ═══════════════════════════════════════════════════════════════
+     FOOTER
+     ═══════════════════════════════════════════════════════════════ */
+  footer {
+    padding: 60px 0 40px;
+    text-align: center;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    color: var(--ink-soft);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+  }
+  footer .ornament {
+    display: block;
+    margin: 0 auto 24px;
+    width: 60px;
+    height: 1px;
+    background: var(--ink);
+  }
+
+  /* responsive */
+  @media (max-width: 640px) {
+    .order-label { width: 70px; font-size: 10px; }
+    .viz { padding: 24px 16px; }
+    .viz-title { padding-left: 80px; }
+    .meta-line { font-size: 9px; }
+  }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+
+  <!-- HERO -->
+  <header class="hero">
+    <div class="meta-line">
+      <span>§ MEMORY MANAGEMENT</span>
+      <span>● A VISUAL FIELD GUIDE</span>
+      <span>LINUX KERNEL / mm</span>
+    </div>
+
+    <div class="eyebrow">Chapter One — The Problem of Pages</div>
+
+    <h1>The Buddy<br><em>Allocator</em></h1>
+
+    <p class="lede">
+      How the Linux kernel slices and recombines physical memory into power-of-two
+      blocks — fast, fragmentation-resistant, and elegantly recursive.
+      Watch the algorithm split, allocate, and merge in real time.
+    </p>
+
+    <div class="hero-figure">
+      <span>FIG. 0 — MEMORY UNDER LOAD</span>
+      <div class="hero-blocks">
+        <div></div><div></div><div></div><div></div>
+        <div></div><div></div><div></div><div></div>
+      </div>
+    </div>
+  </header>
+
+  <!-- SECTION 1 - CORE IDEA -->
+  <section>
+    <div class="sec-num">§ 01 / The Core Idea</div>
+    <h2>Memory in <em>powers of two</em>.</h2>
+
+    <p class="prose">
+      The kernel manages physical RAM in fixed-size <strong>pages</strong> — usually
+      4&nbsp;KiB each. The buddy allocator groups them into blocks whose size is always
+      <code>2ⁿ × pages</code>. We call <code>n</code> the <strong>order</strong>.
+    </p>
+    <p class="prose">
+      An order-0 block is one page. Order-1 is two contiguous pages. Order-2 is
+      four. Linux typically goes up to order&nbsp;10 — a 4&nbsp;MiB chunk of 1024 pages.
+      Every block at order <code>n</code> has a <em>buddy</em>: the adjacent block
+      it would merge with to form a single order-<code>n+1</code> block.
+    </p>
+
+    <div class="viz" id="viz-concept">
+      <div class="viz-corner">FIG. 1</div>
+      <div class="viz-title">A 16-page region — every order is a power of two</div>
+
+      <div class="mem-row">
+        <div class="order-row">
+          <div class="order-label">ORDER <b>4</b><br>16 pages</div>
+          <div class="order-track" style="height:32px;">
+            <div class="blk free" style="height:100%;"></div>
+          </div>
+        </div>
+        <div class="order-row">
+          <div class="order-label">ORDER <b>3</b><br>8 pages</div>
+          <div class="order-track" style="height:32px;">
+            <div class="blk free"></div><div class="blk free"></div>
+          </div>
+        </div>
+        <div class="order-row">
+          <div class="order-label">ORDER <b>2</b><br>4 pages</div>
+          <div class="order-track" style="height:32px;">
+            <div class="blk free"></div><div class="blk free"></div>
+            <div class="blk free"></div><div class="blk free"></div>
+          </div>
+        </div>
+        <div class="order-row">
+          <div class="order-label">ORDER <b>1</b><br>2 pages</div>
+          <div class="order-track" style="height:32px;">
+            <div class="blk free"></div><div class="blk free"></div>
+            <div class="blk free"></div><div class="blk free"></div>
+            <div class="blk free"></div><div class="blk free"></div>
+            <div class="blk free"></div><div class="blk free"></div>
+          </div>
+        </div>
+        <div class="order-row">
+          <div class="order-label">ORDER <b>0</b><br>1 page</div>
+          <div class="order-track" style="height:24px;">
+            <div class="blk free"></div><div class="blk free"></div>
+            <div class="blk free"></div><div class="blk free"></div>
+            <div class="blk free"></div><div class="blk free"></div>
+            <div class="blk free"></div><div class="blk free"></div>
+            <div class="blk free"></div><div class="blk free"></div>
+            <div class="blk free"></div><div class="blk free"></div>
+            <div class="blk free"></div><div class="blk free"></div>
+            <div class="blk free"></div><div class="blk free"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- SECTION 2 - FREE LISTS -->
+  <section>
+    <div class="sec-num">§ 02 / Bookkeeping</div>
+    <h2>An array of <em>free lists</em>.</h2>
+
+    <p class="prose">
+      For each order, the allocator keeps a doubly-linked list of currently free blocks.
+      The whole structure lives in <code>struct zone.free_area[MAX_ORDER]</code> —
+      one entry per order. Allocating a block is a head-pop; freeing is a head-push.
+    </p>
+    <p class="prose">
+      Initially, all of memory might sit as a single huge block at the top order.
+      As demand arrives, blocks get <strong>split downward</strong>; as memory is
+      released, they get <strong>merged upward</strong>.
+    </p>
+
+    <div class="viz">
+      <div class="viz-corner">FIG. 2</div>
+      <div class="viz-title">free_area[] — one list per order</div>
+
+      <div class="freelists" id="freelist-static">
+        <div class="fl-row">
+          <span class="fl-label">order <b>4</b></span>
+          <span class="fl-arrow">→</span>
+          <div class="fl-list">
+            <div class="fl-node">block @ 0x000</div>
+          </div>
+        </div>
+        <div class="fl-row">
+          <span class="fl-label">order <b>3</b></span>
+          <span class="fl-arrow">→</span>
+          <div class="fl-list"><span class="fl-empty">∅ (empty)</span></div>
+        </div>
+        <div class="fl-row">
+          <span class="fl-label">order <b>2</b></span>
+          <span class="fl-arrow">→</span>
+          <div class="fl-list"><span class="fl-empty">∅ (empty)</span></div>
+        </div>
+        <div class="fl-row">
+          <span class="fl-label">order <b>1</b></span>
+          <span class="fl-arrow">→</span>
+          <div class="fl-list"><span class="fl-empty">∅ (empty)</span></div>
+        </div>
+        <div class="fl-row">
+          <span class="fl-label">order <b>0</b></span>
+          <span class="fl-arrow">→</span>
+          <div class="fl-list"><span class="fl-empty">∅ (empty)</span></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- SECTION 3 - ALLOCATION DEMO -->
+  <section>
+    <div class="sec-num">§ 03 / Allocation</div>
+    <h2>Split until it <em>fits</em>.</h2>
+
+    <p class="prose">
+      Suppose you ask for an order-1 block (2 pages). The allocator looks at
+      <code>free_area[1]</code>. If it's empty, it walks <em>upward</em> until it
+      finds a non-empty list — say, order&nbsp;4. It pops that block, then splits
+      it in half: one half goes back onto <code>free_area[3]</code>, the other
+      gets split again, and again, until we have a block of the requested order.
+    </p>
+    <p class="prose">
+      Press <strong>step</strong> below to watch a request for an order-1 block
+      cascade down through three splits.
+    </p>
+
+    <div class="viz">
+      <div class="viz-corner">DEMO 1</div>
+      <div class="viz-title">Allocating a 2-page (order 1) block</div>
+
+      <div class="mem-row" id="alloc-demo">
+        <div class="order-row">
+          <div class="order-label">ORDER <b>4</b></div>
+          <div class="order-track"><div class="blk free" data-id="o4-0"></div></div>
+        </div>
+        <div class="order-row">
+          <div class="order-label">ORDER <b>3</b></div>
+          <div class="order-track">
+            <div class="blk" data-id="o3-0" style="opacity:0.25"></div>
+            <div class="blk" data-id="o3-1" style="opacity:0.25"></div>
+          </div>
+        </div>
+        <div class="order-row">
+          <div class="order-label">ORDER <b>2</b></div>
+          <div class="order-track">
+            <div class="blk" data-id="o2-0" style="opacity:0.25"></div>
+            <div class="blk" data-id="o2-1" style="opacity:0.25"></div>
+            <div class="blk" data-id="o2-2" style="opacity:0.25"></div>
+            <div class="blk" data-id="o2-3" style="opacity:0.25"></div>
+          </div>
+        </div>
+        <div class="order-row">
+          <div class="order-label">ORDER <b>1</b></div>
+          <div class="order-track">
+            <div class="blk" data-id="o1-0" style="opacity:0.25"></div>
+            <div class="blk" data-id="o1-1" style="opacity:0.25"></div>
+            <div class="blk" data-id="o1-2" style="opacity:0.25"></div>
+            <div class="blk" data-id="o1-3" style="opacity:0.25"></div>
+            <div class="blk" data-id="o1-4" style="opacity:0.25"></div>
+            <div class="blk" data-id="o1-5" style="opacity:0.25"></div>
+            <div class="blk" data-id="o1-6" style="opacity:0.25"></div>
+            <div class="blk" data-id="o1-7" style="opacity:0.25"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="step-display" id="alloc-step">
+        <span class="step-tag">step 0</span>
+        <span>One free order-4 block. A request for order 1 arrives.</span>
+      </div>
+
+      <div class="controls">
+        <span class="ctrl-label">walk through →</span>
+        <button id="alloc-prev" class="ghost">◂ prev</button>
+        <button id="alloc-next" class="primary">step ▸</button>
+        <button id="alloc-reset" class="ghost">↺ reset</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- SECTION 4 - BUDDY MATH -->
+  <section>
+    <div class="sec-num">§ 04 / Why "Buddy"?</div>
+    <h2>One bit of <em>address</em>, flipped.</h2>
+
+    <p class="prose">
+      Two blocks of order <code>n</code> are buddies if their starting addresses
+      differ in <strong>exactly one bit</strong> — the bit at position <code>n</code>
+      (counting in pages, from zero). To find the buddy of a block at index
+      <code>i</code>, you simply XOR with <code>2ⁿ</code>:
+    </p>
+
+    <div class="math-grid">
+      <div class="math-card">
+        <h3>◇ Buddy formula</h3>
+        <div class="formula">
+          buddy(i, n) = i <b>XOR</b> 2ⁿ<br><br>
+          <span style="color:var(--ink-soft)">// example, order 1:</span><br>
+          block @ <span class="bit">0</span><span class="bit">1</span><span class="bit">0</span><span class="bit flip">0</span> (idx 4)<br>
+          buddy @ <span class="bit">0</span><span class="bit">1</span><span class="bit">1</span><span class="bit flip">0</span> (idx 6)
+        </div>
+      </div>
+      <div class="math-card">
+        <h3>◇ Why it matters</h3>
+        <div class="formula" style="font-size:13px;line-height:1.7;">
+          On free, the allocator computes the buddy's address in <b>O(1)</b>,
+          checks if it's also free at the same order, and if so —<br><br>
+          <span style="color:var(--accent-2)">→ removes the buddy from its list</span><br>
+          <span style="color:var(--accent-2)">→ merges the two into one order n+1 block</span><br>
+          <span style="color:var(--accent-2)">→ recursively tries to merge again</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- SECTION 5 - DEALLOCATION -->
+  <section>
+    <div class="sec-num">§ 05 / Deallocation</div>
+    <h2>Merge until the buddy is <em>busy</em>.</h2>
+
+    <p class="prose">
+      Freeing is the mirror image of allocation. When a block is released, the
+      allocator looks at its buddy. If the buddy is also free at the same order,
+      they coalesce into a block one order larger. Then it checks <em>that</em>
+      block's buddy — and the merge can ripple all the way to the top.
+    </p>
+    <p class="prose">
+      This is what keeps fragmentation in check: every freed block is greedily
+      reabsorbed into the largest contiguous chunk it can join.
+    </p>
+
+    <div class="viz">
+      <div class="viz-corner">DEMO 2</div>
+      <div class="viz-title">Freeing a block — three cascading merges</div>
+
+      <div class="mem-row" id="free-demo">
+        <div class="order-row">
+          <div class="order-label">ORDER <b>4</b></div>
+          <div class="order-track"><div class="blk" data-id="f4-0" style="opacity:0.25"></div></div>
+        </div>
+        <div class="order-row">
+          <div class="order-label">ORDER <b>3</b></div>
+          <div class="order-track">
+            <div class="blk free" data-id="f3-0"></div>
+            <div class="blk" data-id="f3-1" style="opacity:0.25"></div>
+          </div>
+        </div>
+        <div class="order-row">
+          <div class="order-label">ORDER <b>2</b></div>
+          <div class="order-track">
+            <div class="blk" data-id="f2-0" style="opacity:0.25"></div>
+            <div class="blk" data-id="f2-1" style="opacity:0.25"></div>
+            <div class="blk free" data-id="f2-2"></div>
+            <div class="blk" data-id="f2-3" style="opacity:0.25"></div>
+          </div>
+        </div>
+        <div class="order-row">
+          <div class="order-label">ORDER <b>1</b></div>
+          <div class="order-track">
+            <div class="blk" data-id="f1-0" style="opacity:0.25"></div>
+            <div class="blk" data-id="f1-1" style="opacity:0.25"></div>
+            <div class="blk" data-id="f1-2" style="opacity:0.25"></div>
+            <div class="blk" data-id="f1-3" style="opacity:0.25"></div>
+            <div class="blk" data-id="f1-4" style="opacity:0.25"></div>
+            <div class="blk" data-id="f1-5" style="opacity:0.25"></div>
+            <div class="blk free" data-id="f1-6"></div>
+            <div class="blk alloc" data-id="f1-7"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="step-display" id="free-step">
+        <span class="step-tag">step 0</span>
+        <span>An allocated order-1 block (rightmost). Its buddy is free. Press step to release it.</span>
+      </div>
+
+      <div class="controls">
+        <span class="ctrl-label">walk through →</span>
+        <button id="free-prev" class="ghost">◂ prev</button>
+        <button id="free-next" class="primary">step ▸</button>
+        <button id="free-reset" class="ghost">↺ reset</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- SECTION 6 - PLAYGROUND -->
+  <section>
+    <div class="sec-num">§ 06 / Playground</div>
+    <h2>Now you <em>try</em>.</h2>
+
+    <p class="prose">
+      A live 16-page region with a complete buddy allocator running in your browser.
+      Click any button below to allocate; click an allocated block to free it.
+      Watch the free lists and the trace log update in real time.
+    </p>
+
+    <div class="viz">
+      <div class="viz-corner">LIVE</div>
+      <div class="viz-title">interactive — 16 pages, max order 4</div>
+
+      <div class="mem-row" id="live-mem"></div>
+
+      <div class="freelists" id="live-freelists" style="margin-top:32px;"></div>
+
+      <div class="controls">
+        <span class="ctrl-label">allocate →</span>
+        <button data-order="0">order 0 / 1 page</button>
+        <button data-order="1">order 1 / 2 pages</button>
+        <button data-order="2">order 2 / 4 pages</button>
+        <button data-order="3">order 3 / 8 pages</button>
+        <button data-order="4">order 4 / 16 pages</button>
+        <button id="live-reset" class="ghost" style="margin-left:auto;">↺ reset</button>
+      </div>
+
+      <div class="trace" id="live-trace"></div>
+    </div>
+  </section>
+
+  <!-- FOOTER -->
+  <footer>
+    <span class="ornament"></span>
+    end of transmission · mm/page_alloc.c · linux/include/linux/mmzone.h
+  </footer>
+
+</div>
+
+<script>
+/* ═══════════════════════════════════════════════════════════════
+   ALLOCATION DEMO — 5 STEPS
+   ═══════════════════════════════════════════════════════════════ */
+(function() {
+  const root = document.getElementById('alloc-demo');
+  if (!root) return;
+  const stepEl = document.getElementById('alloc-step');
+  const nextBtn = document.getElementById('alloc-next');
+  const prevBtn = document.getElementById('alloc-prev');
+  const resetBtn = document.getElementById('alloc-reset');
+
+  // Each step describes the visible state of every block.
+  // class options: free, alloc, split, ''
+  // opacity defaults handle: '' = active region not yet split, 'split' = was split (visually muted)
+  const steps = [
+    {
+      label: "step 0 — initial",
+      msg: "One free order-4 block covers all 16 pages. A request for order 1 (2 pages) arrives.",
+      state: {
+        'o4-0': 'free',
+        'o3-0': 'dim', 'o3-1': 'dim',
+        'o2-0': 'dim', 'o2-1': 'dim', 'o2-2': 'dim', 'o2-3': 'dim',
+        'o1-0': 'dim', 'o1-1': 'dim', 'o1-2': 'dim', 'o1-3': 'dim',
+        'o1-4': 'dim', 'o1-5': 'dim', 'o1-6': 'dim', 'o1-7': 'dim',
+      }
+    },
+    {
+      label: "step 1 — pop order 4",
+      msg: "free_area[1], [2], [3] are empty. Walk up to free_area[4]. Pop the block. Split it: upper half → free_area[3], keep the lower half.",
+      state: {
+        'o4-0': 'split',
+        'o3-0': 'flash', 'o3-1': 'free',
+        'o2-0': 'dim', 'o2-1': 'dim', 'o2-2': 'dim', 'o2-3': 'dim',
+        'o1-0': 'dim', 'o1-1': 'dim', 'o1-2': 'dim', 'o1-3': 'dim',
+        'o1-4': 'dim', 'o1-5': 'dim', 'o1-6': 'dim', 'o1-7': 'dim',
+      }
+    },
+    {
+      label: "step 2 — split again",
+      msg: "Still too big. Split the lower order-3 into two order-2 blocks. Upper half → free_area[2], keep the lower.",
+      state: {
+        'o4-0': 'split',
+        'o3-0': 'split', 'o3-1': 'free',
+        'o2-0': 'flash', 'o2-1': 'free', 'o2-2': 'dim', 'o2-3': 'dim',
+        'o1-0': 'dim', 'o1-1': 'dim', 'o1-2': 'dim', 'o1-3': 'dim',
+        'o1-4': 'dim', 'o1-5': 'dim', 'o1-6': 'dim', 'o1-7': 'dim',
+      }
+    },
+    {
+      label: "step 3 — split once more",
+      msg: "One more split. Upper half of the order-2 → free_area[1]. The lower half is now exactly order 1 — the size we asked for.",
+      state: {
+        'o4-0': 'split',
+        'o3-0': 'split', 'o3-1': 'free',
+        'o2-0': 'split', 'o2-1': 'free', 'o2-2': 'dim', 'o2-3': 'dim',
+        'o1-0': 'flash', 'o1-1': 'free', 'o1-2': 'dim', 'o1-3': 'dim',
+        'o1-4': 'dim', 'o1-5': 'dim', 'o1-6': 'dim', 'o1-7': 'dim',
+      }
+    },
+    {
+      label: "step 4 — return",
+      msg: "The lower order-1 block (pages 0–1) is returned to the caller as allocated. free_area now holds one block at orders 1, 2, and 3.",
+      state: {
+        'o4-0': 'split',
+        'o3-0': 'split', 'o3-1': 'free',
+        'o2-0': 'split', 'o2-1': 'free', 'o2-2': 'dim', 'o2-3': 'dim',
+        'o1-0': 'alloc', 'o1-1': 'free', 'o1-2': 'dim', 'o1-3': 'dim',
+        'o1-4': 'dim', 'o1-5': 'dim', 'o1-6': 'dim', 'o1-7': 'dim',
+      }
+    },
+  ];
+
+  let cur = 0;
+
+  function applyState(idx) {
+    const s = steps[idx];
+    Object.entries(s.state).forEach(([id, kind]) => {
+      const el = root.querySelector(`[data-id="${id}"]`);
+      if (!el) return;
+      el.classList.remove('free', 'alloc', 'split', 'flash');
+      el.style.opacity = '';
+      if (kind === 'dim') {
+        el.style.opacity = '0.25';
+      } else if (kind === 'flash') {
+        el.classList.add('alloc', 'flash');
+        // fade flash class after animation
+        setTimeout(() => el.classList.remove('flash'), 800);
+      } else {
+        el.classList.add(kind);
+      }
+    });
+    stepEl.querySelector('.step-tag').textContent = s.label;
+    stepEl.querySelector('span:last-child').textContent = s.msg;
+    prevBtn.disabled = idx === 0;
+    nextBtn.disabled = idx === steps.length - 1;
+    nextBtn.textContent = idx === steps.length - 1 ? 'done ✓' : 'step ▸';
+  }
+
+  nextBtn.addEventListener('click', () => {
+    if (cur < steps.length - 1) { cur++; applyState(cur); }
+  });
+  prevBtn.addEventListener('click', () => {
+    if (cur > 0) { cur--; applyState(cur); }
+  });
+  resetBtn.addEventListener('click', () => { cur = 0; applyState(cur); });
+
+  applyState(0);
+})();
+
+/* ═══════════════════════════════════════════════════════════════
+   DEALLOCATION DEMO — 5 STEPS, CASCADING MERGES
+   ═══════════════════════════════════════════════════════════════ */
+(function() {
+  const root = document.getElementById('free-demo');
+  if (!root) return;
+  const stepEl = document.getElementById('free-step');
+  const nextBtn = document.getElementById('free-next');
+  const prevBtn = document.getElementById('free-prev');
+  const resetBtn = document.getElementById('free-reset');
+
+  // Initial layout (matches the markup):
+  //   order 4: split
+  //   order 3: free at 0  (covers pages 0-7), split at 1
+  //   order 2: split, split, free at 2 (pages 8-11), split at 3
+  //   order 1: split x6, free at 6 (pages 12-13), ALLOC at 7 (pages 14-15)
+  //
+  // After freeing the alloc block, three cascading merges:
+  //   merge 1: f1-7 free + f1-6 free  →  f2-3 free
+  //   merge 2: f2-3 free + f2-2 free  →  f3-1 free
+  //   merge 3: f3-1 free + f3-0 free  →  f4-0 free
+
+  const steps = [
+    {
+      label: "step 0 — initial",
+      msg: "Initial state. Pages 14–15 are allocated. Note: their buddy (pages 12–13) is also free.",
+      apply: () => {
+        setBlock('f4-0', 'split');
+        setBlock('f3-0', 'free'); setBlock('f3-1', 'split');
+        setBlock('f2-0', 'split'); setBlock('f2-1', 'split');
+        setBlock('f2-2', 'free'); setBlock('f2-3', 'split');
+        for (let i = 0; i < 6; i++) setBlock(`f1-${i}`, 'split');
+        setBlock('f1-6', 'free');
+        setBlock('f1-7', 'alloc');
+      }
+    },
+    {
+      label: "step 1 — release",
+      msg: "free(pages 14–15). Mark the block as free at order 1. Now compute its buddy: idx 14 XOR 2 = idx 12 — also free!",
+      apply: () => {
+        setBlock('f1-7', 'free', true);
+        setBlock('f1-6', 'free', true);
+      }
+    },
+    {
+      label: "step 2 — merge → order 2",
+      msg: "Both order-1 buddies are free. Remove buddy from free_area[1], coalesce into one order-2 block at pages 12–15. Check its buddy at order 2.",
+      apply: () => {
+        setBlock('f1-6', 'split');
+        setBlock('f1-7', 'split');
+        setBlock('f2-3', 'free', true);
+        setBlock('f2-2', 'free', true);  // pulse the existing buddy
+      }
+    },
+    {
+      label: "step 3 — merge → order 3",
+      msg: "Buddy at order 2 (pages 8–11) is also free. Coalesce: remove from free_area[2], create one order-3 block at pages 8–15.",
+      apply: () => {
+        setBlock('f2-2', 'split');
+        setBlock('f2-3', 'split');
+        setBlock('f3-1', 'free', true);
+        setBlock('f3-0', 'free', true);
+      }
+    },
+    {
+      label: "step 4 — merge → order 4",
+      msg: "Buddy at order 3 (pages 0–7) is free too. Final merge: one order-4 block covers all 16 pages. Memory is whole again.",
+      apply: () => {
+        setBlock('f3-0', 'split');
+        setBlock('f3-1', 'split');
+        setBlock('f4-0', 'free', true);
+      }
+    },
+  ];
+
+  function setBlock(id, kind, flash=false) {
+    const el = root.querySelector(`[data-id="${id}"]`);
+    if (!el) return;
+    el.classList.remove('free', 'alloc', 'split', 'flash');
+    el.style.opacity = '';
+    if (kind === 'split') { el.classList.add('split'); el.style.opacity = '0.35'; }
+    else el.classList.add(kind);
+    if (flash) { el.classList.add('flash'); setTimeout(() => el.classList.remove('flash'), 800); }
+  }
+
+  let cur = 0;
+  function gotoStep(idx) {
+    // re-apply all steps up to idx (so prev works)
+    // Simple: reset then apply 0..idx
+    steps[0].apply();
+    for (let i = 1; i <= idx; i++) steps[i].apply();
+    stepEl.querySelector('.step-tag').textContent = steps[idx].label;
+    stepEl.querySelector('span:last-child').textContent = steps[idx].msg;
+    prevBtn.disabled = idx === 0;
+    nextBtn.disabled = idx === steps.length - 1;
+    nextBtn.textContent = idx === steps.length - 1 ? 'done ✓' : 'step ▸';
+    cur = idx;
+  }
+
+  nextBtn.addEventListener('click', () => { if (cur < steps.length - 1) gotoStep(cur + 1); });
+  prevBtn.addEventListener('click', () => { if (cur > 0) gotoStep(cur - 1); });
+  resetBtn.addEventListener('click', () => gotoStep(0));
+
+  gotoStep(0);
+})();
+
+/* ═══════════════════════════════════════════════════════════════
+   LIVE PLAYGROUND — REAL BUDDY ALLOCATOR
+   ═══════════════════════════════════════════════════════════════ */
+(function() {
+  const memEl  = document.getElementById('live-mem');
+  const flEl   = document.getElementById('live-freelists');
+  const traceEl = document.getElementById('live-trace');
+  if (!memEl) return;
+
+  const PAGES = 16;
+  const MAX_ORDER = 4;     // 2^4 = 16
+
+  // freeLists[order] = sorted array of starting page indices
+  // allocated = { startIdx: order }
+  let freeLists = [];
+  let allocated = {};
+
+  function reset() {
+    freeLists = [];
+    for (let o = 0; o <= MAX_ORDER; o++) freeLists.push([]);
+    freeLists[MAX_ORDER].push(0);
+    allocated = {};
+    log('reset', 'Allocator initialized. One order-' + MAX_ORDER + ' block at page 0.', 'ok');
+    render();
+  }
+
+  function log(tag, msg, kind='') {
+    const line = document.createElement('div');
+    line.className = 'trace-line';
+    line.innerHTML = `<span class="tag ${kind}">${tag}</span>${msg}`;
+    traceEl.appendChild(line);
+    traceEl.scrollTop = traceEl.scrollHeight;
+  }
+
+  function popFree(order) {
+    if (freeLists[order].length === 0) return null;
+    const idx = freeLists[order].shift();
+    return idx;
+  }
+
+  function addFree(order, idx) {
+    freeLists[order].push(idx);
+    freeLists[order].sort((a, b) => a - b);
+  }
+
+  function removeFree(order, idx) {
+    const i = freeLists[order].indexOf(idx);
+    if (i >= 0) { freeLists[order].splice(i, 1); return true; }
+    return false;
+  }
+
+  function alloc(reqOrder) {
+    if (reqOrder > MAX_ORDER) {
+      log('error', `order ${reqOrder} exceeds MAX_ORDER=${MAX_ORDER}`, 'err');
+      return null;
+    }
+    log('alloc', `request: order ${reqOrder} (${1 << reqOrder} pages)`);
+
+    // Walk up to find a free block
+    let curOrder = reqOrder;
+    while (curOrder <= MAX_ORDER && freeLists[curOrder].length === 0) {
+      log('search', `  free_area[${curOrder}] empty → check order ${curOrder + 1}`);
+      curOrder++;
+    }
+    if (curOrder > MAX_ORDER) {
+      log('fail', `  no free memory at any order ≥ ${reqOrder}. ENOMEM.`, 'err');
+      return null;
+    }
+
+    const startIdx = popFree(curOrder);
+    log('pop', `  popped block @${startIdx} from free_area[${curOrder}]`, 'ok');
+
+    // Split down: each iteration puts the upper half on the free list
+    while (curOrder > reqOrder) {
+      curOrder--;
+      const buddyIdx = startIdx + (1 << curOrder);
+      addFree(curOrder, buddyIdx);
+      log('split', `  split: pushed buddy @${buddyIdx} onto free_area[${curOrder}]`);
+    }
+
+    allocated[startIdx] = reqOrder;
+    log('return', `→ allocated @${startIdx} (order ${reqOrder}, pages ${startIdx}–${startIdx + (1 << reqOrder) - 1})`, 'ok');
+    render();
+    return startIdx;
+  }
+
+  function free(startIdx) {
+    if (!(startIdx in allocated)) {
+      log('error', `block @${startIdx} is not allocated`, 'err');
+      return;
+    }
+    let curOrder = allocated[startIdx];
+    delete allocated[startIdx];
+    log('free', `release: block @${startIdx} (order ${curOrder})`);
+
+    // Cascade merges
+    while (curOrder < MAX_ORDER) {
+      const buddyIdx = startIdx ^ (1 << curOrder);
+      if (removeFree(curOrder, buddyIdx)) {
+        log('merge', `  buddy @${buddyIdx} also free → coalesce into order ${curOrder + 1}`, 'ok');
+        startIdx = Math.min(startIdx, buddyIdx);
+        curOrder++;
+      } else {
+        log('stop', `  buddy @${buddyIdx} not free → stop merging`);
+        break;
+      }
+    }
+
+    addFree(curOrder, startIdx);
+    log('done', `→ block @${startIdx} on free_area[${curOrder}]`, 'ok');
+    render();
+  }
+
+  function render() {
+    // Strip view: render contiguous spans across the 16 pages.
+    // Each span is either an allocated block of some order, or a free block of some order, or unused (impossible after init).
+    // Build a map from page index -> {kind, order, startIdx}
+    const ownership = new Array(PAGES).fill(null);
+    for (let o = 0; o <= MAX_ORDER; o++) {
+      for (const idx of freeLists[o]) {
+        for (let p = idx; p < idx + (1 << o); p++) ownership[p] = { kind: 'free', order: o, idx };
+      }
+    }
+    for (const [idxStr, o] of Object.entries(allocated)) {
+      const idx = +idxStr;
+      for (let p = idx; p < idx + (1 << o); p++) ownership[p] = { kind: 'alloc', order: o, idx };
+    }
+
+    // Render strip: a single row, each block sized by its page span
+    memEl.innerHTML = '';
+    const row = document.createElement('div');
+    row.className = 'order-row';
+    const lab = document.createElement('div');
+    lab.className = 'order-label';
+    lab.innerHTML = '16 PAGES<br>0–15';
+    row.appendChild(lab);
+
+    const track = document.createElement('div');
+    track.className = 'order-track';
+    track.style.height = '52px';
+    track.style.gap = '3px';
+
+    let p = 0;
+    while (p < PAGES) {
+      const own = ownership[p];
+      if (!own) { p++; continue; }
+      const blk = document.createElement('div');
+      blk.className = 'blk';
+      blk.style.flex = (1 << own.order);
+      blk.style.height = '100%';
+      blk.style.fontSize = '11px';
+      blk.style.flexDirection = 'column';
+      blk.style.gap = '2px';
+      if (own.kind === 'free') {
+        blk.classList.add('free');
+        blk.innerHTML = `<span style="font-weight:700">FREE · order ${own.order}</span><span style="opacity:0.7;font-size:9px">pages ${own.idx}–${own.idx + (1 << own.order) - 1}</span>`;
+      } else {
+        blk.classList.add('alloc');
+        blk.innerHTML = `<span style="font-weight:700">USED · order ${own.order}</span><span style="opacity:0.85;font-size:9px">pages ${own.idx}–${own.idx + (1 << own.order) - 1}</span>`;
+        blk.style.cursor = 'pointer';
+        blk.title = 'click to free';
+        blk.addEventListener('click', () => free(own.idx));
+      }
+      track.appendChild(blk);
+      p += (1 << own.order);
+    }
+    row.appendChild(track);
+    memEl.appendChild(row);
+
+    // Render free lists
+    flEl.innerHTML = '';
+    for (let o = MAX_ORDER; o >= 0; o--) {
+      const r = document.createElement('div');
+      r.className = 'fl-row';
+      const list = freeLists[o];
+      const items = list.length === 0
+        ? `<span class="fl-empty">∅ (empty)</span>`
+        : list.map(i => `<div class="fl-node entering">@${i} · ${1 << o} pg</div>`).join('');
+      r.innerHTML = `
+        <span class="fl-label">order <b>${o}</b></span>
+        <span class="fl-arrow">→</span>
+        <div class="fl-list">${items}</div>
+      `;
+      flEl.appendChild(r);
+    }
+  }
+
+  // Wire up buttons
+  document.querySelectorAll('button[data-order]').forEach(btn => {
+    btn.addEventListener('click', () => alloc(+btn.dataset.order));
+  });
+  document.getElementById('live-reset').addEventListener('click', () => {
+    traceEl.innerHTML = '';
+    reset();
+  });
+
+  // initial render
+  reset();
+})();
+</script>
+
+</body>
+</html>
